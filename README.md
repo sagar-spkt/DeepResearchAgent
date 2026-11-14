@@ -2,7 +2,7 @@
 
 A portfolio application for self-hosted deep research with durable conversations, private documents, explicit memory and reproducible AWS deployment source.
 
-**Current state:** local API, worker, web UI, PostgreSQL/pgvector and migrations are running; one small real Bedrock tool-call smoke test succeeded. The frontend production build succeeds. Full browser flow, general-purpose live research with Tavily, model quality, and AWS deployment/restore remain unverified; release remains blocked on the items in the roadmap.
+**Current state:** local API, worker, web UI, PostgreSQL/pgvector and migrations are running. A bounded Bedrock + Tavily research request completed with source links, a browser upload was indexed and cited in a document-grounded answer, and the API/worker recovered conversation and checkpoint state after restart. The frontend production build succeeds. Broad research quality, Cognito flows and AWS deployment/restore remain unverified; release remains blocked on the items in the roadmap.
 
 - [Implementation roadmap and evidence](docs/implementation-roadmap.md)
 - [Local setup and verification](docs/local-development.md)

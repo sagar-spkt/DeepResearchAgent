@@ -21,7 +21,7 @@ Acceptance evidence: API tests exercise synthetic signed tokens and local users.
 - [x] Test SDK execution, completed-checkpoint recovery, structured reports, SSE replay and API-to-worker round trips.
 - [ ] Test real Bedrock/vLLM tool calls, tokenizer budgets, parser/template compatibility and failure recovery.
 
-Acceptance evidence: offline mode uses the real SDK without paid calls. Search credits and source use are durable across worker reconstruction. Real-model research quality is unverified.
+Acceptance evidence: offline mode uses the real SDK without paid calls. Search credits and source use are durable across worker reconstruction. One bounded live Bedrock + Tavily research run completed and rendered sources; this is integration evidence, not a model-quality evaluation.
 
 ## 3. Document ingestion and context
 
@@ -43,7 +43,7 @@ Acceptance evidence: the 100-turn fixture retains the durable transcript while t
 - [x] Resolve/review npm lock, install dependencies and pass the full Next.js build.
 - [ ] Exercise signup/login/history/upload/reconnect/admin revocation through a real browser.
 
-Acceptance evidence: 15 standalone Node tests and syntax checks pass; optimized Next.js production build succeeds. Full browser sign-up/login, upload and admin revocation flows remain unverified. Backend authorization remains authoritative.
+Acceptance evidence: 15 standalone Node tests and syntax checks pass; optimized Next.js production build succeeds. Local browser session/history/report/upload/attachment flows were exercised. Cognito sign-up/login and administrator revocation remain unverified. Backend authorization remains authoritative.
 
 ## 5. Observability and evaluation
 
@@ -93,8 +93,8 @@ Acceptance evidence: lifecycle tests use fake clients/runners only. Manual mutat
 
 ## Verification and current blockers
 
-Available checks are documented in docs/local-development.md. Current verified scope includes backend regression tests with actual SDK execution/100 turns, standalone frontend behavior, offline 20-case harness, repository/lifecycle/control fixtures, lint/types and static deployment rendering. Final local pass: 26 backend tests, 79 repository/lifecycle/control tests, 15 Node tests, and 20/20 synthetic harness cases passed. Ruff and backend mypy checks passed. These counts do not include live browser, container, GPU or AWS tests.
+Available checks are documented in docs/local-development.md. Current verified scope includes backend regression tests with actual SDK execution/100 turns, standalone frontend behavior, offline 20-case harness, repository/lifecycle/control fixtures, lint/types and static deployment rendering. Final local pass: 27 backend tests, 79 repository/lifecycle/control tests, 15 Node tests, and 20/20 synthetic harness cases passed. Ruff and backend mypy checks passed. These counts do not include GPU or AWS release tests.
 
-Unverified or missing: cross-platform uv/provider locks, full browser flows, real CPU embedding weights, general-purpose live Bedrock research quality and Tavily-backed citations, complete purge/promotion/restore, live teardown inventory/expiry and enforcement against out-of-band AWS administrators. Docker startup, PostgreSQL migration, one Bedrock tool-call smoke test, and local API/web service startup are verified. The Cloud runtime skill is present, but no callable Cloud environment tools were found; plugin discovery did not find a suitable connected execution environment. No alternative hosting provider was selected.
+Unverified or missing: cross-platform uv/provider locks, Cognito and admin-revocation browser flows, real CPU embedding weights, broad live Bedrock research quality, complete purge/promotion/restore, live teardown inventory/expiry and enforcement against out-of-band AWS administrators. Docker startup, PostgreSQL migration, a Bedrock tool-call smoke test, a bounded live Bedrock + Tavily run with source links, document upload/index/attachment, a document-grounded live answer and PostgreSQL/checkpoint recovery after API/worker restart are verified. The Cloud runtime skill is present, but no callable Cloud environment tools were found; plugin discovery did not find a suitable connected execution environment. No alternative hosting provider was selected.
 
 Paid deployment admission remains closed. Continue with these unchecked items rather than treating the repository as production-ready.

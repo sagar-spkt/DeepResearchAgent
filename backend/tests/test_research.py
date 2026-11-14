@@ -76,6 +76,46 @@ def test_sdk_fake_execution_and_durable_restart(context):
         assert len(list(session.scalars(select(Memory)))) == 1
 
 
+def test_new_run_includes_retrieved_attached_evidence_without_tool_choice(context):
+    settings, factory = context
+    source_text = "Example Widget supports exporting plain text summaries."
+    vector = embed_texts([source_text], settings)[0]
+    with factory.begin() as session:
+        session.add(
+            Document(
+                id="source",
+                user_id="alice",
+                name="specification.txt",
+                media_type="text/plain",
+                storage_key="source",
+                status="ready",
+            )
+        )
+        session.flush()
+        session.add(
+            Attachment(conversation_id="conversation", document_id="source", user_id="alice")
+        )
+        session.add(
+            Chunk(
+                document_id="source",
+                user_id="alice",
+                ordinal=0,
+                text=source_text,
+                locator="section 1",
+                embedding=vector,
+            )
+        )
+
+    report = execute_research("run", factory, settings)
+
+    assert source_text in report
+    with factory() as session:
+        used = session.scalar(
+            select(Event.data).where(Event.run_id == "run", Event.kind == "documents_used")
+        )
+    assert used == {"document_ids": ["source"]}
+
+
 def test_retrieval_requires_ownership_ready_and_explicit_attachment(context):
     settings, factory = context
     with factory.begin() as session:

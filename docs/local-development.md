@@ -2,14 +2,14 @@
 
 ## Current execution boundary
 
-Offline tests use a fake provider, but the default local application configuration uses real Amazon Bedrock responses; it never silently falls back to fake output. AWS deployment uses private vLLM. In this workspace, package installation, AWS profile/model discovery, one real Bedrock tool-call request, Git initialization, Docker, PostgreSQL migration and local API/web startup have been verified. Full research quality, Tavily search, browser flow, PostgreSQL failure/restart behavior and AWS deployment remain unverified.
+Offline tests use a fake provider, but the default local application configuration uses real Amazon Bedrock responses; it never silently falls back to fake output. AWS deployment uses private vLLM. In this workspace, package installation, AWS profile/model discovery, a real Bedrock tool-call request, one bounded Tavily-backed research run with rendered citations, browser history/report/upload/attachment flow, Git initialization, Docker, PostgreSQL migration, local API/web startup and API/worker restart recovery against PostgreSQL checkpoints have been verified. Broad research quality, real CPU embedding weights, Cognito and AWS deployment remain unverified.
 
 ## Backend
 
 Use Python 3.12. Create `.venv` if it does not exist (`uv venv --python 3.12 .venv`). The existing environment in this workspace is Python 3.12.14. In a network-enabled local terminal, install the Bedrock adapter and project if needed, then configure local settings:
 
 ```sh
-uv pip install --python .venv/bin/python -e '.[bedrock,local-postgres]'
+uv pip install --python .venv/bin/python -e '.[bedrock,local-postgres]' pytest==9.1.1 ruff==0.17.2 mypy==1.20.2
 test -e .env || cp .env.example .env
 if test ! -e .env.platform; then
   printf 'LOCAL_DB_PASSWORD=%s\nLOCAL_LANGFUSE_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env.platform
@@ -51,7 +51,9 @@ export DATABASE_URL="postgresql+psycopg://research:${LOCAL_DB_PASSWORD}@127.0.0.
 PYTHONPATH=backend .venv/bin/python -m research_app.worker
 ```
 
-The checked-in `.env.example` selects Amazon Nova Lite through Bedrock, the `research-operator` profile in `us-east-1`, SQLite and fake CPU embeddings. Nova Lite supports Converse tool calling and is available in `us-east-1`; inference is billed per token, and model access or AWS account credits vary by account. Check the current [Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) and [Nova Lite model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-lite.html) before use. A small synthetic Converse tool-call smoke test passed through the installed `ChatBedrockConverse` adapter. Full agent research quality and Tavily web search remain unverified; configure `TAVILY_API_KEY` for live web research. Local API calls require `X-Dev-User: demo@example.test`; this is the bootstrap owner. Other email identities start pending. Never expose this local identity simulator to an untrusted network. Use `MODEL_PROVIDER=fake` only when intentionally running offline tests; it produces synthetic reports.
+The checked-in `.env.example` selects Amazon Nova Lite through Bedrock, the `research-operator` profile in `us-east-1`, SQLite and fake CPU embeddings. Nova Lite supports Converse tool calling and is available in `us-east-1`; inference is billed per token, and model access or AWS account credits vary by account. Check the current [Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) and [Nova Lite model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-lite.html) before use. A synthetic Converse tool-call smoke test and one bounded live research request through Bedrock plus Tavily passed. The latter rendered source links in the browser; this is integration evidence, not a broad quality evaluation. Configure `TAVILY_API_KEY` for live web research. Local API calls require `X-Dev-User: demo@example.test`; this is the bootstrap owner. Other email identities start pending. Never expose this local identity simulator to an untrusted network. Use `MODEL_PROVIDER=fake` only when intentionally running offline tests; it produces synthetic reports.
+
+At the start of each new run, the worker retrieves relevant chunks from ready documents explicitly attached to that user's conversation and includes the bounded results as untrusted evidence in the first model turn. The retrieval tool remains available during a run so uploads that become ready later can be picked up. One synthetic TXT upload was verified end to end through browser upload, indexing, explicit attachment and a cited real-model answer. This does not establish general retrieval quality for large or scanned files.
 
 Configuration is read from process environment, not automatically from a backend `.env` file. Load `.env` in each backend terminal before migration, API and worker startup. All processes must use the same database and model configuration. Keep paid testing bounded. Tavily is optional and free-plan exhaustion is visible.
 
@@ -78,7 +80,7 @@ docker compose --env-file .env.platform config --quiet
 docker compose --env-file .env.platform up --build
 ```
 
-Compose includes pgvector, migration, API, worker and web, plus an optional `observability` profile for self-hosted Langfuse dependencies. Application state is retained in named volumes; do not use `down -v` unless intentionally deleting local data. Bedrock in containers additionally needs a deliberately configured AWS credential source; host AWS_PROFILE alone does not mount credentials.
+Compose includes pgvector, migration, API, worker and web, plus an optional `observability` profile for self-hosted Langfuse dependencies. That profile has not been started in this workspace: Docker Desktop allocates 8 GiB, while Langfuse's [resource guidance](https://langfuse.com/self-hosting/configuration/scaling) lists 8 GiB for ClickHouse alone plus its separate web, worker, PostgreSQL, Valkey and blob-storage services. Local research does not depend on Langfuse. Local Langfuse ingestion and admin trace viewing remain unverified. Application state is retained in named volumes; do not use `down -v` unless intentionally deleting local data. Bedrock in containers additionally needs a deliberately configured AWS credential source; host AWS_PROFILE alone does not mount credentials.
 
 The npm lockfile is present; use `npm ci` for reproducible frontend dependencies. A cross-platform uv lock is still absent. The Dockerfiles are development build recipes; do not promote them as reproducible AWS release artifacts until locks and image digests have been resolved and verified. Building the `embeddings` backend target requires an immutable EMBEDDING_REVISION and preloads weights; runtime embedding requests are offline-only.
 

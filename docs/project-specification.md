@@ -1,6 +1,6 @@
 # Project specification
 
-Status: agreed v1 direction; initial local implementation and platform source exist. Full browser build, live model/PostgreSQL integration and cloud lifecycle remain unverified. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
+Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, PostgreSQL/checkpoint restart recovery, and core browser upload/history/report flows have been exercised with synthetic data. Broad model quality, local Langfuse, real CPU embedding weights and cloud lifecycle remain unverified. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
 
 ## Product requirements
 
