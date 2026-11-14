@@ -1,0 +1,475 @@
+"""AWS/Kubernetes adapter; clients are injected for tests and created lazily by CLI."""
+
+import base64
+import hashlib
+import json
+import re
+import tempfile
+import time
+from datetime import timedelta
+from pathlib import Path
+
+from .core import Refused, canonical, command, now, timestamp, validate_config
+
+
+class AWSAdapter:
+    def __init__(self, config, clients, runner=command, sleep=time.sleep):
+        self.config = validate_config(config)
+        self.clients = clients
+        self.runner = runner
+        self.sleep = sleep
+        self.exclusive_guard = None
+        self.context = f"arn:aws:eks:{config['region']}:{config['account_id']}:cluster/{config['cluster_name']}"
+
+    def kubectl(self, *args):
+        if args and args[0] in {"scale", "exec", "cp", "delete"}:
+            self.require_lease()
+        return self.runner(["kubectl", "--context", self.context, "--namespace", "research", *args])
+
+    def require_lease(self):
+        if self.exclusive_guard is None:
+            raise Refused("Mutating lifecycle operations require a global admission and lease")
+        self.exclusive_guard()
+
+    def identity(self):
+        actual = self.clients["sts"].get_caller_identity()["Account"]
+        if actual != self.config["account_id"]:
+            raise Refused("Active AWS credentials belong to another account")
+
+    def verify_retained(self):
+        self.identity()
+        expected = {"Project": "deepresearch", "Environment": self.config["environment"]}
+        for key in ["document_bucket", "backup_bucket", "trace_bucket"]:
+            bucket = self.config[key]
+            tags = {
+                x["Key"]: x["Value"]
+                for x in self.clients["s3"].get_bucket_tagging(
+                    Bucket=bucket, ExpectedBucketOwner=self.config["account_id"]
+                )["TagSet"]
+            }
+            if any(tags.get(k) != v for k, v in expected.items()):
+                raise Refused("Bucket tag mismatch: " + bucket)
+            if (
+                self.clients["s3"]
+                .get_bucket_versioning(Bucket=bucket, ExpectedBucketOwner=self.config["account_id"])
+                .get("Status")
+                != "Enabled"
+            ):
+                raise Refused("Versioning must be enabled: " + bucket)
+        pool = self.clients["cognito-idp"].describe_user_pool(
+            UserPoolId=self.config["user_pool_id"]
+        )["UserPool"]
+        if any(pool.get("UserPoolTags", {}).get(k) != v for k, v in expected.items()):
+            raise Refused("Cognito scope mismatch")
+
+    def verify_scope(self, config):
+        if config != self.config:
+            raise Refused("Adapter configuration mismatch")
+        self.verify_retained()
+        cluster = self.clients["eks"].describe_cluster(name=config["cluster_name"])["cluster"]
+        if cluster["arn"] != self.context or any(
+            cluster.get("tags", {}).get(k) != v
+            for k, v in {
+                "Project": "deepresearch",
+                "Environment": config["environment"],
+                "Session": config["session_id"],
+            }.items()
+        ):
+            raise Refused("EKS cluster scope mismatch")
+        kube = json.loads(
+            self.runner(
+                ["kubectl", "--context", self.context, "config", "view", "--minify", "-o", "json"]
+            )
+        )
+        current = kube["clusters"][0]["cluster"]
+        if (
+            current.get("server") != cluster["endpoint"]
+            or current.get("certificate-authority-data") != cluster["certificateAuthority"]["data"]
+        ):
+            raise Refused("Kubernetes context endpoint/CA does not match provider cluster")
+        db = self.clients["rds"].describe_db_instances(
+            DBInstanceIdentifier=config["database_identifier"]
+        )["DBInstances"][0]
+        tags = {
+            x["Key"]: x["Value"]
+            for x in self.clients["rds"].list_tags_for_resource(ResourceName=db["DBInstanceArn"])[
+                "TagList"
+            ]
+        }
+        if (
+            tags.get("Project") != "deepresearch"
+            or tags.get("Environment") != config["environment"]
+            or tags.get("Session") != config["session_id"]
+            or not db.get("StorageEncrypted")
+        ):
+            raise Refused("Database scope/encryption mismatch")
+
+    def quiesce(self):
+        for name in [
+            "research-api",
+            "research-web",
+            "research-worker",
+            "langfuse-web",
+            "langfuse-worker",
+        ]:
+            self.kubectl("scale", "deployment/" + name, "--replicas=0")
+        for _ in range(90):
+            try:
+                writers = self.verify_quiesced()
+                return {
+                    "namespace": "research",
+                    "writers": writers,
+                    "verified_at": now().isoformat(),
+                }
+            except Refused:
+                self.sleep(2)
+        raise Refused("Application pods did not quiesce; no backup receipt issued")
+
+    def verify_quiesced(self, expected=None):
+        writers = []
+        for name in [
+            "research-api",
+            "research-web",
+            "research-worker",
+            "langfuse-web",
+            "langfuse-worker",
+        ]:
+            dep = json.loads(self.kubectl("get", "deployment", name, "-o", "json"))
+            metadata = dep.get("metadata", {})
+            if not metadata.get("uid") or not isinstance(metadata.get("generation"), int):
+                raise Refused("Missing writer UID/generation")
+            writers.append(
+                {"name": name, "uid": metadata["uid"], "generation": metadata["generation"]}
+            )
+            if dep.get("spec", {}).get("replicas", 1) != 0:
+                raise Refused("Application deployment resumed: " + name)
+        pods = json.loads(self.kubectl("get", "pods", "-o", "json"))["items"]
+        for pod in pods:
+            labels = pod["metadata"].get("labels", {})
+            component = labels.get("component")
+            if (labels.get("app") == "research" and component in ["api", "web", "worker"]) or (
+                labels.get("app") == "observability"
+                and component in ["langfuse-web", "langfuse-worker"]
+            ):
+                if pod.get("status", {}).get("phase") not in ["Succeeded", "Failed"]:
+                    raise Refused("A writer pod is still present")
+        if expected is not None and expected.get("writers") != writers:
+            raise Refused(
+                "Writer deployment generation/UID changed since backup; fresh backup required"
+            )
+        return writers
+
+    def ch(self, query):
+        output = self.kubectl(
+            "exec",
+            "observability-clickhouse-0",
+            "--container",
+            "clickhouse",
+            "--",
+            "clickhouse-client",
+            "--config-file=/etc/clickhouse-client/config.xml",
+            "--format",
+            "JSONEachRow",
+            "--query",
+            query,
+        )
+        return [json.loads(line) for line in output.splitlines() if line.strip()]
+
+    def backup_clickhouse(self, prefix):
+        # Bucket/prefix are generated from validated identifiers, never arbitrary SQL.
+        url = f"https://{self.config['backup_bucket']}.s3.{self.config['region']}.amazonaws.com/{prefix}clickhouse/"
+        result = self.ch("BACKUP DATABASE default TO S3('" + url + "')")
+        if len(result) != 1 or result[0].get("status") != "BACKUP_CREATED":
+            raise Refused("ClickHouse backup did not complete")
+        backup_id = result[0]["id"]
+        if not re.fullmatch(r"[a-f0-9-]{36}", backup_id):
+            raise Refused("Unexpected ClickHouse backup identifier")
+        records = self.ch(
+            "SELECT id, status, error FROM system.backups WHERE id='" + backup_id + "'"
+        )
+        if (
+            len(records) != 1
+            or records[0].get("status") != "BACKUP_CREATED"
+            or records[0].get("error")
+        ):
+            raise Refused("ClickHouse system.backups verification failed")
+        objects = self.versions(self.config["backup_bucket"], prefix + "clickhouse/")
+        if not objects["versions"]:
+            raise Refused("No versioned ClickHouse backup objects found")
+        return {"id": backup_id, "url": url, "prefix": prefix + "clickhouse/", "objects": objects}
+
+    def backup_valkey(self, prefix):
+        self.kubectl(
+            "exec", "observability-valkey-0", "--container", "valkey", "--", "valkey-cli", "SAVE"
+        )
+        with tempfile.TemporaryDirectory(prefix="research-valkey-") as tmp:
+            dest = Path(tmp) / "dump.rdb"
+            self.kubectl(
+                "cp", "observability-valkey-0:/data/dump.rdb", str(dest), "--container", "valkey"
+            )
+            checksum = hashlib.sha256(dest.read_bytes()).hexdigest()
+            with dest.open("rb") as stream:
+                self.require_lease()
+                result = self.clients["s3"].put_object(
+                    ExpectedBucketOwner=self.config["account_id"],
+                    Bucket=self.config["backup_bucket"],
+                    Key=prefix + "valkey/dump.rdb",
+                    Body=stream,
+                    ServerSideEncryption="AES256",
+                    ChecksumSHA256=base64.b64encode(bytes.fromhex(checksum)).decode(),
+                    Metadata={"sha256": checksum, "session": self.config["session_id"]},
+                )
+        if not result.get("VersionId") or result["VersionId"] == "null":
+            raise Refused("Valkey backup did not receive a stable S3 version ID")
+        return {
+            "bucket": self.config["backup_bucket"],
+            "key": prefix + "valkey/dump.rdb",
+            "version_id": result["VersionId"],
+            "sha256": checksum,
+        }
+
+    def snapshot_database(self, identifier):
+        self.require_lease()
+        rds = self.clients["rds"]
+        rds.create_db_snapshot(
+            DBSnapshotIdentifier=identifier,
+            DBInstanceIdentifier=self.config["database_identifier"],
+            Tags=[
+                {"Key": "Project", "Value": "deepresearch"},
+                {"Key": "Environment", "Value": self.config["environment"]},
+                {"Key": "Session", "Value": self.config["session_id"]},
+            ],
+        )["DBSnapshot"]
+        rds.get_waiter("db_snapshot_available").wait(
+            DBSnapshotIdentifier=identifier, WaiterConfig={"Delay": 30, "MaxAttempts": 60}
+        )
+        snapshot = rds.describe_db_snapshots(DBSnapshotIdentifier=identifier)["DBSnapshots"][0]
+        if snapshot["Status"] != "available" or not snapshot.get("Encrypted"):
+            raise Refused("RDS snapshot unavailable or unencrypted")
+        return {
+            "identifier": identifier,
+            "arn": snapshot["DBSnapshotArn"],
+            "created_at": snapshot["SnapshotCreateTime"].isoformat(),
+        }
+
+    def versions(self, bucket, prefix=""):
+        versions = []
+        markers = []
+        pages = (
+            self.clients["s3"]
+            .get_paginator("list_object_versions")
+            .paginate(Bucket=bucket, Prefix=prefix, ExpectedBucketOwner=self.config["account_id"])
+        )
+        for page in pages:
+            for entry in page.get("Versions", []):
+                if entry["VersionId"] == "null":
+                    raise Refused("Unversioned object in backup inventory")
+                versions.append(
+                    {key: entry[key] for key in ["Key", "VersionId", "ETag", "Size", "IsLatest"]}
+                )
+            for entry in page.get("DeleteMarkers", []):
+                markers.append({key: entry[key] for key in ["Key", "VersionId", "IsLatest"]})
+        return {"bucket": bucket, "versions": versions, "delete_markers": markers}
+
+    def inventory(self):
+        return [
+            self.versions(self.config[key])
+            for key in ["document_bucket", "trace_bucket", "backup_bucket"]
+        ]
+
+    def verify_objects(self, inventory):
+        for entry in inventory["versions"]:
+            head = self.clients["s3"].head_object(
+                ExpectedBucketOwner=self.config["account_id"],
+                Bucket=inventory["bucket"],
+                Key=entry["Key"],
+                VersionId=entry["VersionId"],
+            )
+            if head.get("ETag") != entry["ETag"] or head.get("ContentLength") != entry["Size"]:
+                raise Refused("Versioned backup object differs from receipt")
+
+    def verify_receipt(
+        self, receipt, require_quiesced=True, allow_expired=False, require_durable=True
+    ):
+        if (
+            receipt.get("operation") != "backup-receipt"
+            or receipt.get("config") != self.config
+            or not receipt.get("identities_retained")
+        ):
+            raise Refused("Invalid backup receipt binding")
+        if (not allow_expired and timestamp(receipt["expires_at"]) <= now()) or timestamp(
+            receipt["created_at"]
+        ) > now() + timedelta(minutes=2):
+            raise Refused("Backup receipt expired or from the future")
+        self.verify_retained()
+        snap = receipt["database_snapshot"]
+        actual = self.clients["rds"].describe_db_snapshots(DBSnapshotIdentifier=snap["identifier"])[
+            "DBSnapshots"
+        ][0]
+        expected_arn = f"arn:aws:rds:{self.config['region']}:{self.config['account_id']}:snapshot:"
+        tags = {
+            v["Key"]: v["Value"]
+            for v in self.clients["rds"].list_tags_for_resource(
+                ResourceName=actual["DBSnapshotArn"]
+            )["TagList"]
+        }
+        if (
+            actual["Status"] != "available"
+            or not actual.get("Encrypted")
+            or actual["DBSnapshotArn"] != snap["arn"]
+            or not snap["arn"].startswith(expected_arn)
+            or actual["DBInstanceIdentifier"] != self.config["database_identifier"]
+            or tags.get("Environment") != self.config["environment"]
+            or tags.get("Session") != self.config["session_id"]
+        ):
+            raise Refused("Provider snapshot verification failed")
+        self.verify_snapshot_timing(actual, receipt)
+        expected_prefix = f"sessions/{self.config['environment']}/{self.config['session_id']}/"
+        if receipt["clickhouse"]["prefix"] != expected_prefix + "clickhouse/":
+            raise Refused("Unexpected ClickHouse backup prefix")
+        if (
+            receipt["clickhouse"]["objects"]["bucket"] != self.config["backup_bucket"]
+            or not receipt["clickhouse"]["objects"]["versions"]
+        ):
+            raise Refused("Missing ClickHouse versioned backup objects")
+        self.verify_objects(receipt["clickhouse"]["objects"])
+        valkey = receipt["valkey"]
+        if (
+            valkey["bucket"] != self.config["backup_bucket"]
+            or valkey["key"] != expected_prefix + "valkey/dump.rdb"
+            or valkey["version_id"] == "null"
+        ):
+            raise Refused("Valkey backup binding mismatch")
+        body = self.clients["s3"].get_object(
+            ExpectedBucketOwner=self.config["account_id"],
+            Bucket=valkey["bucket"],
+            Key=valkey["key"],
+            VersionId=valkey["version_id"],
+        )["Body"]
+        checksum = hashlib.sha256()
+        while chunk := body.read(1024 * 1024):
+            checksum.update(chunk)
+        body.close()
+        if checksum.hexdigest() != valkey["sha256"]:
+            raise Refused("Valkey checksum mismatch")
+        inventories = receipt["object_inventory"]
+        if {x["bucket"] for x in inventories} != {
+            self.config[k] for k in ["document_bucket", "trace_bucket", "backup_bucket"]
+        }:
+            raise Refused("Incomplete retained object inventory")
+        for inventory in inventories:
+            self.verify_objects(inventory)
+        if require_durable:
+            self.verify_durable_receipt(receipt)
+        if require_quiesced:
+            self.verify_quiesced(receipt["drain"])
+
+    def cluster_albs(self):
+        result = []
+        for page in self.clients["elbv2"].get_paginator("describe_load_balancers").paginate():
+            for lb in page["LoadBalancers"]:
+                tags = self.clients["elbv2"].describe_tags(ResourceArns=[lb["LoadBalancerArn"]])[
+                    "TagDescriptions"
+                ][0]["Tags"]
+                if any(
+                    t["Key"] == "elbv2.k8s.aws/cluster"
+                    and t["Value"] == self.config["cluster_name"]
+                    for t in tags
+                ):
+                    result.append(lb["LoadBalancerArn"])
+        return result
+
+    def remove_ingress(self):
+        self.kubectl(
+            "delete",
+            "ingress",
+            "research",
+            "research-console",
+            "--ignore-not-found=true",
+            "--wait=true",
+            "--timeout=180s",
+        )
+        for _ in range(120):
+            if not self.cluster_albs():
+                return
+            self.sleep(5)
+        raise Refused("Cluster load balancers remain; refusing runtime destruction")
+
+    def disable_database_protection(self):
+        self.require_lease()
+        self.clients["rds"].modify_db_instance(
+            DBInstanceIdentifier=self.config["database_identifier"],
+            DeletionProtection=False,
+            ApplyImmediately=True,
+        )
+        self.clients["rds"].get_waiter("db_instance_available").wait(
+            DBInstanceIdentifier=self.config["database_identifier"],
+            WaiterConfig={"Delay": 15, "MaxAttempts": 40},
+        )
+
+    def remaining_inventory(self):
+        from .inventory import InventoryCollector
+
+        return InventoryCollector(self.config, self.clients).collect()
+
+    def publish_receipt(self, kind, value):
+        self.require_lease()
+        if kind not in ["backup", "shutdown"]:
+            raise Refused("Invalid receipt kind")
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        checksum = hashlib.sha256(payload).hexdigest()
+        key = f"sessions/{self.config['environment']}/{self.config['session_id']}/receipts/{kind}.json"
+        result = self.clients["s3"].put_object(
+            ExpectedBucketOwner=self.config["account_id"],
+            Bucket=self.config["backup_bucket"],
+            Key=key,
+            Body=payload,
+            ServerSideEncryption="AES256",
+            Metadata={"sha256": checksum, "session": self.config["session_id"]},
+        )
+        if not result.get("VersionId") or result["VersionId"] == "null":
+            raise Refused("Receipt is not durably versioned")
+        return {
+            "bucket": self.config["backup_bucket"],
+            "key": key,
+            "version_id": result["VersionId"],
+            "sha256": checksum,
+        }
+
+    def verify_durable_receipt(self, receipt):
+        pointer = receipt.get("durable_backup_receipt") or {}
+        expected = f"sessions/{self.config['environment']}/{self.config['session_id']}/receipts/backup.json"
+        if (
+            pointer.get("bucket") != self.config["backup_bucket"]
+            or pointer.get("key") != expected
+            or not pointer.get("version_id")
+            or pointer["version_id"] == "null"
+        ):
+            raise Refused("Missing immutable retained backup receipt")
+        data = self.clients["s3"].get_object(
+            ExpectedBucketOwner=self.config["account_id"],
+            Bucket=pointer["bucket"],
+            Key=pointer["key"],
+            VersionId=pointer["version_id"],
+        )["Body"]
+        try:
+            payload = data.read(16 * 1024 * 1024 + 1)
+        finally:
+            data.close()
+        if len(payload) > 16 * 1024 * 1024 or hashlib.sha256(payload).hexdigest() != pointer.get(
+            "sha256"
+        ):
+            raise Refused("Durable backup receipt checksum mismatch")
+        expected_content = {k: v for k, v in receipt.items() if k != "durable_backup_receipt"}
+        if canonical(json.loads(payload)) != canonical(expected_content):
+            raise Refused("Local receipt differs from retained immutable receipt")
+
+    def verify_snapshot_timing(self, snapshot, receipt):
+        created = snapshot["SnapshotCreateTime"]
+        created = created if hasattr(created, "tzinfo") else timestamp(created)
+        if created < timestamp(receipt["drain"]["verified_at"]) or created > timestamp(
+            receipt["created_at"]
+        ):
+            raise Refused("Snapshot was not created after this quiesce and before receipt issuance")
+        if receipt["database_snapshot"].get("created_at") != created.isoformat():
+            raise Refused("Snapshot creation-time receipt mismatch")

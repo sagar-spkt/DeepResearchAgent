@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "required": [
+    "webImage",
+    "workerImage",
+    "clickhouseImage",
+    "valkeyImage",
+    "environment",
+    "sessionId"
+  ],
+  "properties": {
+    "environment": {
+      "enum": ["staging", "production"]
+    },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,15}$"
+    },
+    "storageClass": {
+      "type": "string",
+      "maxLength": 240,
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "webImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "workerImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "clickhouseImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "valkeyImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    }
+  }
+}

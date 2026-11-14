@@ -1,0 +1,24 @@
+{
+  "environment": "staging",
+  "backendImage": "",
+  "webImage": "",
+  "applicationSecret": "research-application",
+  "vllmSecret": "research-vllm",
+  "ingress": {
+    "enabled": false,
+    "host": "",
+    "certificateArn": ""
+  },
+  "vllm": {
+    "enabled": false,
+    "image": "",
+    "model": "Qwen/Qwen3-8B",
+    "revision": "",
+    "maxModelLen": 16384
+  },
+  "webSecret": "research-web-env",
+  "console": {
+    "enabled": false,
+    "image": ""
+  }
+}

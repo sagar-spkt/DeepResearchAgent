@@ -1,0 +1,242 @@
+[
+  {
+    "id": "research-01",
+    "topic": "battery recycling",
+    "prompt": "Research battery recycling using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 1: this document discusses battery recycling. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-02",
+    "topic": "solar storage",
+    "prompt": "Research solar storage using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 2: this document discusses solar storage. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-03",
+    "topic": "heat pumps",
+    "prompt": "Research heat pumps using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 3: this document discusses heat pumps. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-04",
+    "topic": "water reuse",
+    "prompt": "Research water reuse using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 4: this document discusses water reuse. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-05",
+    "topic": "urban trees",
+    "prompt": "Research urban trees using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 5: this document discusses urban trees. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-06",
+    "topic": "ocean monitoring",
+    "prompt": "Research ocean monitoring using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 6: this document discusses ocean monitoring. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-07",
+    "topic": "antibiotic resistance",
+    "prompt": "Research antibiotic resistance using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 7: this document discusses antibiotic resistance. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-08",
+    "topic": "open-source licensing",
+    "prompt": "Research open-source licensing using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 8: this document discusses open-source licensing. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-09",
+    "topic": "database backups",
+    "prompt": "Research database backups using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 9: this document discusses database backups. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-10",
+    "topic": "GPU batching",
+    "prompt": "Research GPU batching using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 10: this document discusses GPU batching. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-11",
+    "topic": "research citations",
+    "prompt": "Research research citations using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 11: this document discusses research citations. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-12",
+    "topic": "food waste",
+    "prompt": "Research food waste using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 12: this document discusses food waste. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-13",
+    "topic": "air quality",
+    "prompt": "Research air quality using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 13: this document discusses air quality. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-14",
+    "topic": "public transport",
+    "prompt": "Research public transport using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 14: this document discusses public transport. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-15",
+    "topic": "building insulation",
+    "prompt": "Research building insulation using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 15: this document discusses building insulation. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-16",
+    "topic": "soil restoration",
+    "prompt": "Research soil restoration using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 16: this document discusses soil restoration. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-17",
+    "topic": "accessible design",
+    "prompt": "Research accessible design using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 17: this document discusses accessible design. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-18",
+    "topic": "password security",
+    "prompt": "Research password security using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 18: this document discusses password security. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-19",
+    "topic": "context management",
+    "prompt": "Research context management using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 19: this document discusses context management. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  },
+  {
+    "id": "research-20",
+    "topic": "data provenance",
+    "prompt": "Research data provenance using the attached evidence. Cite the document locator and clearly state the evidence limits.",
+    "document": "Synthetic evidence 20: this document discusses data provenance. It is a fixture, not factual evidence for publication.",
+    "checks": [
+      "completes",
+      "uses_attached_document",
+      "preserves_source_locator",
+      "no_live_claim_in_fake"
+    ]
+  }
+]

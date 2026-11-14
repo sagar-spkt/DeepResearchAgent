@@ -1,0 +1,102 @@
+{
+  "type": "object",
+  "required": [
+    "environment",
+    "backendImage",
+    "webImage"
+  ],
+  "properties": {
+    "environment": {
+      "enum": [
+        "staging",
+        "production"
+      ]
+    },
+    "backendImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "webImage": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "vllm": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
+    "console": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "console": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "console": {
+            "properties": {
+              "image": {
+                "pattern": "^.+@sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "vllm": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "vllm": {
+            "properties": {
+              "image": {
+                "pattern": "^.+@sha256:[a-f0-9]{64}$"
+              },
+              "revision": {
+                "pattern": "^[a-f0-9]{40}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

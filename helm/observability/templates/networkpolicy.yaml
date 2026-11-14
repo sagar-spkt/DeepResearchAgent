@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: observability-private }
+spec:
+  podSelector:
+    matchLabels: { app: observability }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: observability }
+    - from:
+        - podSelector:
+            matchLabels: { app: research, component: api }
+        - podSelector:
+            matchLabels: { app: research, component: worker }
+        - podSelector:
+            matchLabels: { app: research, component: console }
+      ports: [{ protocol: TCP, port: 3000 }]

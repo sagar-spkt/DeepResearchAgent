@@ -1,0 +1,94 @@
+{
+  "name": "Application checks",
+  "on": {
+    "pull_request": {},
+    "push": {
+      "branches": [
+        "main"
+      ]
+    },
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "backend": {
+      "name": "Backend behavior",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Create isolated Python environment",
+          "run": "python3 -m venv .venv\n.venv/bin/pip install . pytest==9.1.1 ruff==0.17.2 mypy==1.20.2"
+        },
+        {
+          "name": "Lint and types",
+          "run": ".venv/bin/ruff check backend scripts tests\n.venv/bin/mypy backend/research_app --no-incremental"
+        },
+        {
+          "name": "Backend and long-conversation regression tests",
+          "run": ".venv/bin/python -m pytest backend/tests -q"
+        },
+        {
+          "name": "Offline research harness",
+          "run": ".venv/bin/python scripts/run_evals.py --output local-data/evals/offline.json"
+        }
+      ]
+    },
+    "frontend": {
+      "name": "Frontend behavior",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+          "with": {
+            "node-version": "22"
+          }
+        },
+        {
+          "run": "node --test web/tests/*.test.mjs\nnpm --prefix web run check"
+        }
+      ]
+    },
+    "frontend-build": {
+      "name": "Frontend reproducible build",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+          "with": {
+            "node-version": "22"
+          }
+        },
+        {
+          "name": "Require resolved dependency lock",
+          "run": "test -f web/package-lock.json || { echo \"Build blocked: resolve and review web/package-lock.json in a registry-enabled environment\"; exit 1; }"
+        },
+        {
+          "run": "npm --prefix web ci --ignore-scripts\nnpm --prefix web run build"
+        }
+      ]
+    }
+  }
+}

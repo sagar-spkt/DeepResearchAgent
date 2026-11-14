@@ -1,0 +1,7 @@
+{
+  "apiVersion": "v2",
+  "name": "research",
+  "version": "0.1.0",
+  "description": "Private Deep Agents worker and vLLM with public web/API ingress",
+  "type": "application"
+}

@@ -1,0 +1,7 @@
+{
+  "apiVersion": "v2",
+  "name": "research-observability",
+  "version": "0.1.0",
+  "type": "application",
+  "description": "Private single-instance Langfuse with durable ClickHouse and Valkey"
+}

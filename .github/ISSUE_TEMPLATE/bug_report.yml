@@ -1,0 +1,26 @@
+{
+  "name": "Bug report",
+  "description": "Report observable incorrect behavior.",
+  "body": [
+    {
+      "type": "textarea",
+      "id": "behavior",
+      "attributes": {
+        "label": "Expected and actual behavior"
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "reproduction",
+      "attributes": {
+        "label": "Reproduction, environment and sanitized evidence"
+      },
+      "validations": {
+        "required": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+---
+name: "plan-change"
+description: "Plan substantial research-agent changes with observable acceptance criteria and an evidence-based verification strategy."
+---
+
+# Plan a change
+Read AGENTS.md, docs/project-specification.md, and the relevant implementation. Inspect facts before asking questions; ask only for unresolved choices that materially affect behavior.
+
+Define the requested outcome and acceptance criteria. Identify affected interfaces, persisted data, authorization boundaries, and operational cost where relevant. Distinguish requirements from benchmark-dependent assumptions. Compare alternatives only when a real tradeoff exists; record consequential decisions as ADRs.
+
+Return a bounded implementation sequence, meaningful tests (including failure cases), and compatibility/rollout considerations appropriate to the change. A plan does not authorize cloud expenditure, deployment, or deletion. Do not implement when the user requested planning only. For small fixes, keep planning proportional.

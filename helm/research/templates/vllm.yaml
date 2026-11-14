@@ -1,0 +1,59 @@
+{{- if .Values.vllm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: research-vllm }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: research, component: vllm }
+  template:
+    metadata:
+      labels: { app: research, component: vllm }
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector: { workload: gpu }
+      tolerations: [{ key: nvidia.com/gpu, operator: Equal, value: "true", effect: NoSchedule }]
+      containers:
+        - name: vllm
+          image: {{ required "vllm.image must be a tested immutable digest" .Values.vllm.image | quote }}
+          args:
+            - --model
+            - {{ .Values.vllm.model | quote }}
+            - --revision
+            - {{ required "vllm.revision must pin model weights" .Values.vllm.revision | quote }}
+            - --max-model-len
+            - {{ .Values.vllm.maxModelLen | quote }}
+            - --enable-prefix-caching
+            - --enable-chunked-prefill
+            - --enable-auto-tool-choice
+            - --tool-call-parser
+            - hermes
+            - --max-num-seqs
+            - "4"
+            - --gpu-memory-utilization
+            - "0.85"
+          ports: [{ name: http, containerPort: 8000 }]
+          envFrom: [{ secretRef: { name: {{ .Values.vllmSecret }} } }]
+          startupProbe: { httpGet: { path: /health, port: http }, failureThreshold: 120, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 10 }
+          resources:
+            requests: { cpu: "2000m", memory: "20Gi", nvidia.com/gpu: "1" }
+            limits: { cpu: "3000m", memory: "26Gi", nvidia.com/gpu: "1" }
+          volumeMounts:
+            - { name: shm, mountPath: /dev/shm }
+            - { name: cache, mountPath: /root/.cache/huggingface }
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 2Gi }
+        - name: cache
+          emptyDir: { sizeLimit: 40Gi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: research-vllm }
+spec:
+  type: ClusterIP
+  selector: { app: research, component: vllm }
+  ports: [{ name: http, port: 8000, targetPort: http }]
+{{- end }}

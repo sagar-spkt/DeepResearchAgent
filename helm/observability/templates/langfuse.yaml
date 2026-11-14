@@ -1,0 +1,49 @@
+{{- $root := . -}}
+{{- range $name := list "web" "worker" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: langfuse-{{ $name }} }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: observability, component: langfuse-{{ $name }} }
+  template:
+    metadata:
+      labels: { app: observability, component: langfuse-{{ $name }} }
+    spec:
+      serviceAccountName: research-observability
+      nodeSelector: { workload: cpu }
+      containers:
+        - name: langfuse
+          image: {{ if eq $name "web" }}{{ $root.Values.webImage | quote }}{{ else }}{{ $root.Values.workerImage | quote }}{{ end }}
+          envFrom: [{ secretRef: { name: {{ $root.Values.secretName }} } }]
+          env:
+            - { name: AUTH_DISABLE_SIGNUP, value: "true" }
+            - { name: TELEMETRY_ENABLED, value: "false" }
+            - { name: REDIS_HOST, value: "observability-valkey" }
+            - { name: REDIS_PORT, value: "6379" }
+            - { name: CLICKHOUSE_URL, value: "http://observability-clickhouse:8123" }
+            - { name: CLICKHOUSE_MIGRATION_URL, value: "clickhouse://observability-clickhouse:9000" }
+            - { name: CLICKHOUSE_CLUSTER_ENABLED, value: "false" }
+          {{- if eq $name "web" }}
+          ports: [{ name: http, containerPort: 3000 }]
+          startupProbe: { httpGet: { path: /api/public/health, port: http }, failureThreshold: 60, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /api/public/health, port: http }, periodSeconds: 10 }
+          {{- end }}
+          resources:
+            requests: { cpu: "500m", memory: "2Gi" }
+            limits: { cpu: "2000m", memory: "4Gi" }
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: research-observability }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: langfuse }
+spec:
+  type: ClusterIP
+  selector: { app: observability, component: langfuse-web }
+  ports: [{ name: http, port: 3000, targetPort: http }]

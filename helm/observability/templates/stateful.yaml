@@ -1,0 +1,54 @@
+{{- $root := . -}}
+{{- range $name := list "clickhouse" "valkey" }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: observability-{{ $name }} }
+spec:
+  serviceName: observability-{{ $name }}
+  replicas: 1
+  selector:
+    matchLabels: { app: observability, component: {{ $name }} }
+  template:
+    metadata:
+      labels: { app: observability, component: {{ $name }} }
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector: { workload: cpu }
+      containers:
+        - name: {{ $name }}
+          image: {{ if eq $name "clickhouse" }}{{ $root.Values.clickhouseImage | quote }}{{ else }}{{ $root.Values.valkeyImage | quote }}{{ end }}
+          {{- if eq $name "valkey" }}
+          command: ["valkey-server", "--appendonly", "yes"]
+          ports: [{ name: redis, containerPort: 6379 }]
+          {{- else }}
+          envFrom: [{ secretRef: { name: {{ $root.Values.secretName }} } }]
+          ports: [{ name: http, containerPort: 8123 }, { name: native, containerPort: 9000 }]
+          {{- end }}
+          resources:
+            requests: { cpu: "250m", memory: {{ if eq $name "clickhouse" }}"2Gi"{{ else }}"512Mi"{{ end }} }
+            limits: { cpu: "2000m", memory: {{ if eq $name "clickhouse" }}"8Gi"{{ else }}"1Gi"{{ end }} }
+          volumeMounts:
+            - { name: data, mountPath: {{ if eq $name "clickhouse" }}"/var/lib/clickhouse"{{ else }}"/data"{{ end }} }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ printf "%s-%s" $root.Values.storageClass $name | quote }}
+        resources:
+          requests: { storage: {{ if eq $name "clickhouse" }}"20Gi"{{ else }}"2Gi"{{ end }} }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: observability-{{ $name }} }
+spec:
+  clusterIP: None
+  selector: { app: observability, component: {{ $name }} }
+  ports:
+    {{- if eq $name "clickhouse" }}
+    - { name: http, port: 8123, targetPort: http }
+    - { name: native, port: 9000, targetPort: native }
+    {{- else }}
+    - { name: redis, port: 6379, targetPort: redis }
+    {{- end }}
+{{- end }}

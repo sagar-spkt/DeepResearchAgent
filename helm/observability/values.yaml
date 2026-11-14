@@ -1,0 +1,10 @@
+{
+  "webImage": "",
+  "workerImage": "",
+  "clickhouseImage": "",
+  "valkeyImage": "",
+  "secretName": "research-observability",
+  "storageClass": "deepresearch-observability-gp3",
+  "environment": "",
+  "sessionId": ""
+}
