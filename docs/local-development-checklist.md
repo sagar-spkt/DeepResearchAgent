@@ -6,6 +6,7 @@ This checklist tracks the developer workstation setup separately from AWS releas
 
 - [x] Initialize local Git on `main` with the requested author identity; ignore local secrets/data.
 - [x] Install the pinned Bedrock, PostgreSQL, test, lint and type-check tools.
+- [x] Install CPU BAAI/bge-small-en-v1.5 embeddings, pin/download the model revision, and verify normalized 384-dimensional output.
 - [x] Select real Bedrock inference in the ignored root `.env`; keep fake inference limited to explicit offline tests.
 - [x] Start local pgvector/PostgreSQL and migrate schema plus LangGraph checkpoints.
 - [x] Verify the real Bedrock Converse tool-call path using a synthetic prompt.
@@ -19,6 +20,7 @@ This checklist tracks the developer workstation setup separately from AWS releas
 
 - A synthetic current-information request completed through the real Bedrock provider and Tavily, stored its report/events in PostgreSQL, and rendered source links in the browser. Tavily search use was capped at two calls for the smoke process; no key values were printed or logged.
 - A synthetic TXT file was uploaded through the browser, reached `ready`, was attached to the conversation, and was cited by a real Bedrock research run. This check exposed that models could skip the optional retrieval tool. New runs now receive an automatic owner-scoped retrieval of ready attached evidence before the first model turn; the retrieval tool remains available for later uploads.
+- The pinned BGE model was loaded on CPU, the synthetic upload was re-indexed with real embeddings, and a paraphrased query retrieved and cited it in a real Bedrock run.
 - A 127.0.0.1 browser origin produced the expected same-origin rejection because the local UI is configured for `http://localhost:3000`. All browser checks passed at the documented `http://localhost:3000` origin.
 - After stopping and restarting both API and worker, the API returned ready, and PostgreSQL still returned the completed run, attached ready document and document-use record. The LangGraph checkpoint for the conversation loaded from PostgreSQL.
 

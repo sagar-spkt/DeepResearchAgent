@@ -64,7 +64,8 @@ Acceptance evidence: telemetry failure does not lose reports; admin revocation i
 - [x] Review IAM/settings/ingress integration; run Terraform format, Helm lint/render and Compose configuration checks.
 - [ ] Resolve provider locks and run provider schema validation; pin verified container/model digests.
 - [x] Start local pgvector/PostgreSQL, install the pinned local psycopg binary extra, run schema/checkpoint migration and verify API readiness.
-- [ ] Verify real CPU embedding weights and local Langfuse/ClickHouse/Valkey integration.
+- [x] Download the pinned BGE embedding weights, verify CPU inference and re-index local documents with real vectors.
+- [ ] Verify local Langfuse/ClickHouse/Valkey integration.
 - [ ] Complete controller/bootstrap IAM, secret materialization, domain/ACM setup and live quota/cost checks.
 - [ ] Deploy and smoke-test staging only after all admission, lifecycle and cost prerequisites pass.
 
