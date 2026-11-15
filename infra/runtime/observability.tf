@@ -26,6 +26,8 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "aws-ebs-csi-driver"
+  # Verified compatible with Kubernetes 1.37 in us-east-1 on 2026-11-14.
+  addon_version = "v1.68.0-eksbuild.1"
   pod_identity_association {
     role_arn        = aws_iam_role.ebs_csi.arn
     service_account = "ebs-csi-controller-sa"

@@ -1,6 +1,7 @@
 import json
 from datetime import timedelta
 
+import httpx
 import pytest
 from research_app.config import Settings
 from research_app.db import create_session_factory, migrate
@@ -16,7 +17,13 @@ from research_app.models import (
     now,
 )
 from research_app.observability import LangfuseMetadataCallback
-from research_app.research import RunStopped, RunTools, checkpoints, execute_research
+from research_app.research import (
+    ModelGenerationBudget,
+    RunStopped,
+    RunTools,
+    checkpoints,
+    execute_research,
+)
 from research_app.retrieval import embed_texts, retrieve
 from sqlalchemy import select
 
@@ -24,7 +31,10 @@ from sqlalchemy import select
 @pytest.fixture
 def context(tmp_path):
     settings = Settings(
-        database_url=f"sqlite:///{tmp_path}/db.sqlite", storage_path=tmp_path / "uploads"
+        database_url=f"sqlite:///{tmp_path}/db.sqlite",
+        storage_path=tmp_path / "uploads",
+        model_provider="fake",
+        embedding_provider="fake",
     )
     factory = create_session_factory(settings)
     migrate(factory)
@@ -194,6 +204,37 @@ def test_cancel_revocation_and_lease_fence(context):
         tools.check()
 
 
+def test_evaluation_model_budget_reserves_before_generation():
+    budget = ModelGenerationBudget(
+        max_generations=2,
+        max_input_tokens=200,
+        max_output_tokens=20,
+        input_context_tokens=100,
+        output_tokens_per_generation=10,
+    )
+    budget.acquire()
+    budget.acquire()
+    with pytest.raises(RunStopped, match="generation budget exhausted"):
+        budget.acquire()
+    assert budget.generations == 2
+    assert budget.input_reserved == 200
+    assert budget.output_reserved == 20
+
+
+def test_evaluation_model_budget_refuses_incomplete_token_reservation():
+    budget = ModelGenerationBudget(
+        max_generations=2,
+        max_input_tokens=150,
+        max_output_tokens=20,
+        input_context_tokens=100,
+        output_tokens_per_generation=10,
+    )
+    budget.acquire()
+    with pytest.raises(RunStopped, match="input-token budget exhausted"):
+        budget.acquire()
+    assert budget.generations == 1
+
+
 def test_search_limit_survives_tool_recreation_and_no_network_in_fake(context, monkeypatch):
     settings, factory = context
     settings.search_call_limit = 1
@@ -206,15 +247,84 @@ def test_search_limit_survives_tool_recreation_and_no_network_in_fake(context, m
     assert "Only URLs" in tools.read_webpage("http://169.254.169.254/latest/meta-data")
 
 
+def test_tavily_usage_metadata_is_collected_without_recording_search_content(context, monkeypatch):
+    settings, factory = context
+    settings = settings.model_copy(
+        update={
+            "model_provider": "bedrock",
+            "bedrock_model_id": "amazon.nova-lite-v1:0",
+            "tavily_api_key": "synthetic-key",
+        }
+    )
+    budget = ModelGenerationBudget(
+        max_generations=1,
+        max_input_tokens=300_000,
+        max_output_tokens=100,
+        input_context_tokens=300_000,
+        output_tokens_per_generation=100,
+    )
+    requests = []
+
+    def mock_post(url, *, json, timeout):
+        requests.append((url, json, timeout))
+        if url.endswith("/search"):
+            return httpx.Response(
+                200,
+                json={
+                    "usage": {"credits": 1},
+                    "results": [
+                        {
+                            "url": "https://example.test/source",
+                            "title": "Test",
+                            "raw_content": "synthetic",
+                        }
+                    ],
+                },
+                request=httpx.Request("POST", url),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"credits": 0},
+                "results": [
+                    {
+                        "url": "https://example.test/source",
+                        "raw_content": "synthetic page",
+                    }
+                ],
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("httpx.post", mock_post)
+    tools = RunTools("run", factory, settings, usage_collector=budget)
+    assert "https://example.test/source" in tools.web_search("synthetic query")
+    assert "synthetic page" in tools.read_webpage("https://example.test/source")
+    assert all(request[1]["include_usage"] is True for request in requests)
+    assert all(request[1]["api_key"] == "synthetic-key" for request in requests)
+    snapshot = budget.snapshot()
+    assert snapshot["tavily_requests"] == 2
+    assert snapshot["tavily_credits_reported"] == 1
+    assert snapshot["tavily_usage_records_missing"] == 0
+    assert "synthetic query" not in json.dumps(snapshot)
+
+
 def test_telemetry_omits_content_and_failure_is_nonfatal(context, monkeypatch):
     settings, _ = context
     settings.langfuse_base_url = "http://langfuse.invalid"
     settings.langfuse_public_key = "public"
     settings.langfuse_secret_key = "secret"
-    callback = LangfuseMetadataCallback(settings, "run")
+    callback = LangfuseMetadataCallback(settings, "run", "conversation", "alice@example.test")
     callback.on_chat_model_start({}, [["private document content"]], run_id="generation")
     callback.on_tool_start({"name": "retrieve_documents"}, "private query", run_id="tool")
     assert "private" not in json.dumps(callback.batch)
+    events = [item["body"] for item in callback.batch]
+    trace = events[0]
+    assert trace["id"] == "run"
+    assert trace["sessionId"] == "conversation"
+    assert trace["userId"] != "alice@example.test"
+    assert events[1]["traceId"] == "run"
+    assert events[2]["traceId"] == "run"
 
     def unavailable(*a, **k):
         raise RuntimeError("offline transport")

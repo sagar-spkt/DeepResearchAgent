@@ -68,6 +68,7 @@ def main():
             "shutdown",
             "restore",
             "deploy",
+            "promote",
             "purge",
             "backup-shutdown",
             "plan-admission",
@@ -93,9 +94,9 @@ def main():
     reserved = None
     stack = ExitStack()
     try:
-        if args.operation in ["deploy", "purge", "backup-shutdown"]:
+        if args.operation in ["deploy", "promote", "purge", "backup-shutdown"]:
             raise Refused(
-                "Use explicit planned lifecycle commands. Deployment and foundation purge are not enabled."
+                "Use approved lifecycle runbooks. Deployment, promotion, and foundation purge are not enabled."
             )
         if args.operation in ["backup", "shutdown", "expiry", "admit", "release"]:
             if not (args.execute and args.plan and args.approved_plan_hash and args.output):

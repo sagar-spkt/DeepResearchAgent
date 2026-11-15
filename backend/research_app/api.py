@@ -536,6 +536,3 @@ def create_app(settings=None, session_factory=None):
         )
 
     return app
-
-
-app = create_app()

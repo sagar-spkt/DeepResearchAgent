@@ -1,6 +1,6 @@
 # Project specification
 
-Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, BGE CPU embeddings, PostgreSQL/checkpoint restart recovery, and core browser upload/history/report flows have been exercised with synthetic data. Broad model quality, local Langfuse and cloud lifecycle remain unverified. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
+Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, BGE CPU embeddings, PostgreSQL/checkpoint restart recovery, core browser upload/history/report flows, and low-load local Langfuse ingestion/admin metadata have been exercised with synthetic data. Broad model quality/cost, full browser flows, Cognito, the native-console authorization gateway, and cloud lifecycle remain unverified. See `docs/remaining-work-plan.md` for the current task queue and gates. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
 
 ## Product requirements
 
@@ -28,7 +28,7 @@ Qwen3-8B BF16 is the baseline, not a proven best model. Compare Qwen3-14B, Qwen3
 
 Region us-east-1. Local Docker Compose; separate Terraform state, credentials, identity pools, buckets and backups for staging and production in one AWS account. AWS environments run sequentially; do not assume a quota increase.
 
-Docker/ECR images by digest; EKS/Helm; initial CPU node m6i.2xlarge and dedicated tainted g6e.xlarge GPU node. Current G/VT quota is four vCPUs, allowing one four-vCPU GPU instance at a time in the region. Validate CPU resource sizing, account quotas and capacity before deployment.
+Docker/ECR images by digest; EKS/Helm; initial CPU node m6i.2xlarge and dedicated tainted g6e.xlarge GPU node. Current G/VT quota is four vCPUs, allowing one four-vCPU GPU instance at a time in the region. The current EKS baseline target is Kubernetes 1.37 with standard support only (as of 2026-11-14); verify regional availability, add-on compatibility and capacity before deployment. Validate CPU resource sizing and account quotas.
 
 Two-AZ VPC. Budget-focused nodes have public-subnet outbound internet but no unsolicited inbound access; RDS is private. Restrict Kubernetes API access. ALB with ACM/Route 53 exposes the application only; inference, data services and Langfuse remain private. An owned domain is a deployment prerequisite.
 

@@ -52,11 +52,20 @@ class OfflineResearchModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
-def create_model(settings, user_id):
+def create_model(
+    settings,
+    user_id,
+    *,
+    max_output_tokens=None,
+    max_retries=None,
+    rate_limiter=None,
+    cache=None,
+):
     # LangChain has a transitive OSS LangSmith client, but tracing stays local/self-hosted.
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    profile = {"max_input_tokens": 16384, "max_output_tokens": 2048}
+    output_limit = max_output_tokens or 2048
+    profile = {"max_input_tokens": 16384, "max_output_tokens": output_limit}
     if settings.model_provider == "fake":
         if settings.environment != "local":
             raise ValueError("Fake inference is restricted to local mode")
@@ -71,9 +80,11 @@ def create_model(settings, user_id):
             base_url=settings.vllm_base_url,
             api_key=settings.vllm_api_key,
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=output_limit,
             timeout=60,
-            max_retries=1,
+            max_retries=1 if max_retries is None else max_retries,
+            rate_limiter=rate_limiter,
+            cache=cache,
             use_responses_api=False,
             profile=profile,
             extra_body={"cache_salt": sha256(user_id.encode()).hexdigest()},
@@ -90,9 +101,12 @@ def create_model(settings, user_id):
         return ChatBedrockConverse(
             model=settings.bedrock_model_id,
             region_name=settings.aws_region,
-            max_tokens=2048,
+            max_tokens=output_limit,
             temperature=0.2,
             profile=profile,
-            config=Config(connect_timeout=5, read_timeout=60, retries={"max_attempts": 1}),
+            max_retries=max_retries,
+            rate_limiter=rate_limiter,
+            cache=cache,
+            config=Config(connect_timeout=5, read_timeout=60, retries={"total_max_attempts": 1}),
         )
     raise ValueError("Unknown model provider")

@@ -1,5 +1,6 @@
 """Behavior tests use isolated repositories and never require cloud credentials."""
 
+import json
 import shutil
 import sys
 import tempfile
@@ -52,6 +53,33 @@ class RepositoryChecksTest(unittest.TestCase):
             '{"permissions":{"contents":"read"},"on":{"pull_request":{}},"jobs":{"check":{"steps":[{"uses":"actions/checkout@main"}]}}}\n'
         )
         self.assertTrue(any("not SHA-pinned" in e for e in check(self.root)[0]))
+
+    def test_infrastructure_workflow_is_read_only_validation(self):
+        workflow = ROOT / ".github/workflows/infrastructure-checks.yml"
+        data = json.loads(workflow.read_text())
+        self.assertEqual({"contents": "read"}, data["permissions"])
+        self.assertEqual(
+            {"push", "pull_request", "workflow_dispatch"}, set(data["on"])
+        )
+        commands = "\n".join(
+            step.get("run", "")
+            for job in data["jobs"].values()
+            for step in job["steps"]
+        )
+        serialized = json.dumps(data)
+        self.assertIn("-backend=false", commands)
+        self.assertIn("-lockfile=readonly", commands)
+        self.assertIn("terraform fmt -check", commands)
+        self.assertIn("helm template", commands)
+        self.assertIn("shasum -a 256 -c", commands)
+        self.assertIn(
+            "5b9f5bf3d7295d0c61eda2a7aea8c7f3369d51eca406c3dc032b84eacc3893d3",
+            commands,
+        )
+        self.assertNotIn("terraform plan", commands)
+        self.assertNotIn("terraform apply", commands)
+        self.assertNotIn("id-token", serialized)
+        self.assertNotIn("aws-actions/configure-aws-credentials", serialized)
 
     def test_install_preserves_unmanaged_files(self):
         target = self.root / ".claude/agents/implementer.md"

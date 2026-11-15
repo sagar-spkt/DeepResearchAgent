@@ -11,7 +11,7 @@ class Settings(BaseSettings):
         "local", validation_alias=AliasChoices("ENVIRONMENT", "ENV", "environment")
     )
     database_url: str = "sqlite:///./local-data/research.db"
-    model_provider: Literal["fake", "bedrock", "vllm"] = "fake"
+    model_provider: Literal["fake", "bedrock", "vllm"] = "bedrock"
     release_id: str = "development"
     bedrock_model_id: str = ""
     aws_region: str = "us-east-1"
@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     observability_upstream: str = ""
     observability_console_url: str = ""
     allowed_origins: list[str] = ["http://localhost:3000"]
-    embedding_provider: Literal["fake", "sentence-transformers"] = "fake"
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_provider: Literal["fake", "sentence-transformers"] = "sentence-transformers"
+    embedding_model: str = ""
 
     @model_validator(mode="after")
     def validate_environment(self):
@@ -66,6 +66,8 @@ class Settings(BaseSettings):
             raise ValueError("BEDROCK_MODEL_ID must be explicitly configured")
         if self.model_provider == "vllm" and not (self.vllm_base_url and self.vllm_api_key):
             raise ValueError("VLLM_BASE_URL and VLLM_API_KEY are required")
+        if self.embedding_provider == "sentence-transformers" and not self.embedding_model:
+            raise ValueError("EMBEDDING_MODEL must be explicitly configured")
         if self.storage_backend == "s3" and not self.s3_bucket:
             raise ValueError("S3_BUCKET is required")
         if self.environment != "local":

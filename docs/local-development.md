@@ -2,20 +2,18 @@
 
 ## Current execution boundary
 
-Offline tests use a fake provider, but the default local application configuration uses real Amazon Bedrock responses; it never silently falls back to fake output. AWS deployment uses private vLLM. In this workspace, package installation, AWS profile/model discovery, real BGE CPU embeddings, a Bedrock tool-call request, one bounded Tavily-backed research run with rendered citations, a semantically phrased document retrieval answer, browser history/report/upload/attachment flow, Git initialization, Docker, PostgreSQL migration, local API/web startup and API/worker restart recovery against PostgreSQL checkpoints have been verified. Broad research quality, Cognito and AWS deployment remain unverified.
+Offline tests explicitly select fake providers, but the default local application configuration uses real Amazon Bedrock responses and real embeddings; it never silently falls back to fake output. Runtime startup now requires an explicit Bedrock model ID and embedding model. AWS deployment uses private vLLM. In this workspace, package installation, AWS profile/model discovery, real BGE CPU embeddings, a Bedrock tool-call request, one bounded Tavily-backed research run with rendered citations, a semantically phrased document retrieval answer, browser history/report/upload/attachment flow, Git initialization, Docker, PostgreSQL migration, local API/web startup and API/worker restart recovery against PostgreSQL checkpoints have been verified. Broad research quality, Cognito and AWS deployment remain unverified.
 
 ## Backend
 
-Use Python 3.12. Create `.venv` if it does not exist (`uv venv --python 3.12 .venv`). The existing environment in this workspace is Python 3.12.14. In a network-enabled local terminal, install the Bedrock adapter and project if needed, then configure local settings:
+Use Python 3.12 and uv 0.12.5. The lock was resolved with this uv version. In a network-enabled local terminal, create the project environment and install the project plus its local development extras with the lock:
 
 ```sh
-uv pip install --python .venv/bin/python -e '.[bedrock,local-postgres,embeddings]' pytest==9.1.1 ruff==0.17.2 mypy==1.20.2
+uv sync --locked --extra bedrock --extra local-postgres --extra embeddings --group dev --group build
 scripts/download_embedding_model.sh
 test -e .env || cp .env.example .env
-if test ! -e .env.platform; then
-  printf 'LOCAL_DB_PASSWORD=%s\nLOCAL_LANGFUSE_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env.platform
-  chmod 600 .env.platform
-fi
+test -e .env.platform || cp .env.platform.example .env.platform
+python3 scripts/setup_local_langfuse.py
 ```
 
 Start PostgreSQL/pgvector, and wait for its health check before migrating:
@@ -74,16 +72,32 @@ Research prompts have a 6,000-byte UTF-8 budget; upload long source material ins
 
 ## Containers
 
-Copy `.env.platform.example` to a private `.env.platform` and generate local secrets. Validate configuration before starting:
+Copy `.env.platform.example` to a private `.env.platform`, download the pinned BGE model as described above, and generate local secrets. The Compose API, worker and migration service select Bedrock and real sentence-transformer embeddings; they do not default to fake providers. Their images include the locked Bedrock and embedding dependencies, and mount the local model read-only. Compose does not mount the host AWS profile, so configure an appropriate container credential source before making model requests; otherwise requests fail visibly instead of returning synthetic reports. For normal local Bedrock development with `research-operator`, use the host API/worker commands above, where the host AWS profile is available.
 
 ```sh
 docker compose --env-file .env.platform config --quiet
 docker compose --env-file .env.platform up --build
 ```
 
-Compose includes pgvector, migration, API, worker and web, plus an optional `observability` profile for self-hosted Langfuse dependencies. That profile has not been started in this workspace: Docker Desktop allocates 8 GiB, while Langfuse's [resource guidance](https://langfuse.com/self-hosting/configuration/scaling) lists 8 GiB for ClickHouse alone plus its separate web, worker, PostgreSQL, Valkey and blob-storage services. Local research does not depend on Langfuse. Local Langfuse ingestion and admin trace viewing remain unverified. Application state is retained in named volumes; do not use `down -v` unless intentionally deleting local data. Bedrock in containers additionally needs a deliberately configured AWS credential source; host AWS_PROFILE alone does not mount credentials.
+Compose includes pgvector, migration, API, worker and web, plus an optional `observability` profile for self-hosted Langfuse dependencies. Docker Desktop currently allocates 8 GiB; Langfuse's [resource guidance](https://langfuse.com/self-hosting/configuration/scaling) lists 8 GiB for ClickHouse alone plus its separate web, worker, PostgreSQL, Valkey and blob-storage services. The profile uses authenticated SeaweedFS S3-compatible event storage and authenticated Valkey. Startup and a synthetic callback-to-trace readback have been verified locally. The observed low-load memory use was about 1.3 GiB across Langfuse web/worker, ClickHouse, SeaweedFS, and Valkey; actual resource use rises with trace volume. Start only Langfuse and its dependencies if the API/web are already running on the host:
 
-The npm lockfile is present; use `npm ci` for reproducible frontend dependencies. A cross-platform uv lock is still absent. The Dockerfiles are development build recipes; do not promote them as reproducible AWS release artifacts until locks and image digests have been resolved and verified. Building the `embeddings` backend target requires an immutable EMBEDDING_REVISION and preloads weights; runtime embedding requests are offline-only.
+The backend image syncs the pinned Python runtime dependencies from `uv.lock` in a builder stage; the web image uses `npm ci`. Both Dockerfiles pin multi-platform Python/Node base image digests. Local image builds and disposable-container smoke checks have passed. The corrected Compose API, worker and migration images built with the locked Bedrock/embedding extras; a network-disabled non-root container loaded the local BGE model and returned a normalized 384-dimensional embedding. Compose uses the x86_64 CPU embedding target to match the supported Linux lock and AWS nodes. ECR image digests, SBOM/provenance, vulnerability scanning, and staging compatibility are still release tasks.
+
+```sh
+python3 scripts/setup_local_langfuse.py --enable-app-tracing
+docker compose --env-file .env.platform --profile observability up -d valkey clickhouse seaweedfs seaweedfs-init langfuse langfuse-worker
+docker compose --env-file .env.platform --profile observability ps
+```
+
+Open `http://localhost:3001` and sign in as `demo@example.test`. The generated owner password is stored as `LANGFUSE_INIT_USER_PASSWORD` in ignored `.env.platform`; project keys are stored there and copied into ignored `.env` for host API/worker processes. When running the application services in Compose, the same option configures their internal Langfuse URL (`http://langfuse:3000`) and project keys. Open signup remains disabled. Restart host API and worker after enabling app tracing. The app admin page reads trace metadata through `/api/admin/traces`; non-admin requests are rejected server-side. Native Langfuse console proxying through the app remains disabled. Application state is retained in named volumes; do not use `down -v` unless intentionally deleting local data. Bedrock in containers additionally needs a deliberately configured AWS credential source; host AWS_PROFILE alone does not mount credentials.
+
+The npm lockfile is present; use `npm ci` for reproducible frontend dependencies. Python dependencies, including the pinned Hatchling/editables build backend, are resolved in `uv.lock`; sync with `uv sync --locked --group dev --group build` (add the configured extras as needed). The current CI and backend Docker build use that same lock and disable build isolation only for this project package. Local web and embeddings images have Trivy vulnerability/license reports; the application images are not published or staging-verified artifacts. Hosted runs on commit `497519f4bc55a8775a6bbc68f789d2d92d07b12d` passed repository, backend, frontend behavior, and frontend build jobs, but that commit did not include the current container-security job or lock-based Python setup. The current security workflow has local Trivy/SBOM evidence but still needs hosted execution. A new infrastructure workflow now checks locked backend-disabled Terraform validation and pinned Helm lint/render commands locally; it has not yet had a hosted run. Require ECR digests, provenance, release-artifact scan review, full license review and release validation before promotion. The optional `embeddings` extra selects CPU-only PyTorch for Linux amd64. Building that backend target requires an immutable `EMBEDDING_REVISION` and preloads BGE weights; the final image sets a local model path and disables Hub downloads. For the AWS x86_64 target, build with:
+
+```sh
+docker build --platform linux/amd64 --target embeddings \
+  --build-arg EMBEDDING_REVISION=5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+  -t deepresearch/backend:local-embeddings -f Dockerfile.backend .
+```
 
 ## Checks
 

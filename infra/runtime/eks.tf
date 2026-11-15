@@ -27,6 +27,11 @@ resource "aws_eks_cluster" "main" {
   name     = local.name
   role_arn = aws_iam_role.cluster.arn
   version  = var.kubernetes_version
+  upgrade_policy {
+    support_type = "STANDARD"
+  }
+  # All default networking add-ons are managed and version-pinned below.
+  bootstrap_self_managed_addons = false
   access_config {
     authentication_mode                         = "API"
     bootstrap_cluster_creator_admin_permissions = false
@@ -114,7 +119,7 @@ resource "aws_eks_node_group" "cpu" {
     workload = "cpu"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.node]
+  depends_on = [aws_iam_role_policy_attachment.node, aws_eks_addon.vpc_cni]
 
 }
 
@@ -144,7 +149,13 @@ resource "aws_eks_node_group" "gpu" {
     effect = "NO_SCHEDULE"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.node]
+  depends_on = [
+    aws_iam_role_policy_attachment.node,
+    aws_eks_addon.vpc_cni,
+    aws_eks_addon.kube_proxy,
+    aws_eks_addon.coredns,
+    aws_eks_addon.pod_identity,
+  ]
 
 }
 
@@ -152,6 +163,8 @@ resource "aws_eks_addon" "vpc_cni" {
 
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "vpc-cni"
+  # Verified compatible with Kubernetes 1.37 in us-east-1 on 2026-11-14.
+  addon_version = "v1.23.3-eksbuild.1"
   configuration_values = jsonencode({
     enableNetworkPolicy = "true"
     }
@@ -159,9 +172,28 @@ resource "aws_eks_addon" "vpc_cni" {
 
 }
 
+resource "aws_eks_addon" "kube_proxy" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "kube-proxy"
+  # Verified compatible with Kubernetes 1.37 in us-east-1 on 2026-11-14.
+  addon_version = "v1.37.0-eksbuild.39"
+  depends_on    = [aws_eks_node_group.cpu]
+}
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "coredns"
+  # Verified compatible with Kubernetes 1.37 in us-east-1 on 2026-11-14.
+  addon_version = "v1.14.7-eksbuild.35"
+  depends_on    = [aws_eks_node_group.cpu]
+}
+
 resource "aws_eks_addon" "pod_identity" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "eks-pod-identity-agent"
+  # Verified compatible with Kubernetes 1.37 in us-east-1 on 2026-11-14.
+  addon_version = "v1.4.1-eksbuild.3"
+  depends_on    = [aws_eks_node_group.cpu]
 }
 
 data "aws_iam_policy_document" "pod_trust" {

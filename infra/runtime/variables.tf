@@ -18,7 +18,8 @@ variable "administrator_role_arn" {
 }
 
 variable "kubernetes_version" {
-  type = string
+  type        = string
+  description = "EKS Kubernetes minor version. Use an available standard-support version and verify regional add-on compatibility before apply."
 }
 
 variable "session_id" {

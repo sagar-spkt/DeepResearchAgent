@@ -8,7 +8,7 @@
 - [x] Separate local identity from Cognito access-token validation, bind verified display email using signed ID tokens, and reject development identities in cloud configuration.
 - [x] Persist conversations, messages, explicit memories and approval/owner/admin permissions.
 - [x] Test cross-user isolation, approval revocation and last-owner protection; obtain independent code review.
-- [ ] Resolve and review a cross-platform dependency lock in a registry-enabled environment.
+- [x] Resolve and review a cross-platform Python dependency lock and make CI consume it with locked sync.
 
 Acceptance evidence: API tests exercise synthetic signed tokens and local users. Live Cognito has not been tested. SQLite is not evidence of PostgreSQL behavior.
 
@@ -30,7 +30,7 @@ Acceptance evidence: offline mode uses the real SDK without paid calls. Search c
 - [x] Refresh attachments at tool boundaries and persist/display document-use evidence per run.
 - [x] Use SDK summarization/offloading and bounded explicitly saved memory on each turn.
 - [x] Test malformed sources, deletion, stale ingestion completion, isolation and 100-turn durable context management.
-- [ ] Run PostgreSQL/pgvector integration and real CPU embedding-model tests with pinned cached weights.
+- [x] Run local PostgreSQL/pgvector integration and real CPU embedding-model tests with pinned cached weights.
 
 Acceptance evidence: the 100-turn fixture retains the durable transcript while the model receives a compacted view and older history is offloaded. No automatic permanent memory writes are exposed to the agent.
 
@@ -41,9 +41,10 @@ Acceptance evidence: the 100-turn fixture retains the durable transcript while t
 - [x] Add private documents, explicit memories, approvals, role management and trace metadata screens.
 - [x] Test session tampering, CSRF, SSE parsing, conversation-selection races, document-use replay and cookie migration.
 - [x] Resolve/review npm lock, install dependencies and pass the full Next.js build.
-- [ ] Exercise signup/login/history/upload/reconnect/admin revocation through a real browser.
+- [x] Complete local browser acceptance for identity/session persistence, history, upload/indexing/use, active-run reconnect/cancellation, memory CRUD, owner/admin role visibility, and non-admin denial.
+- [ ] Complete Cognito signup/login/recovery and cloud admin revocation in staging (tracked by LCL-06).
 
-Acceptance evidence: 15 standalone Node tests and syntax checks pass; optimized Next.js production build succeeds. Local browser session/history/report/upload/attachment flows were exercised. Cognito sign-up/login and administrator revocation remain unverified. Backend authorization remains authoritative.
+Acceptance evidence: 16 standalone Node tests and syntax checks pass; optimized Next.js production build succeeds. Chrome exercised local session/history, upload/indexing/attachment, real research completion, app admin trace metadata, native Langfuse trace details, memory CRUD, local approval and role revocation, and active-run reconnect/cancellation. A no-model lifecycle harness used the real BGE document worker and `RunTools.retrieve_documents` during an active browser run, then verified persisted document-use events; it bypassed LLM generation and does not establish model tool-call selection. A contradictory file-access sentence and high token use remain quality/cost findings. Cognito signup/login/recovery and cloud admin revocation remain unverified. Backend authorization remains authoritative.
 
 ## 5. Observability and evaluation
 
@@ -62,10 +63,11 @@ Acceptance evidence: telemetry failure does not lose reports; admin revocation i
 - [x] Add separate retained/runtime Terraform and EKS/RDS/S3/SQS/Cognito/ECR/IAM source.
 - [x] Add Helm app/model/observability deployments, private model networking and separate frontend identity.
 - [x] Review IAM/settings/ingress integration; run Terraform format, Helm lint/render and Compose configuration checks.
-- [ ] Resolve provider locks and run provider schema validation; pin verified container/model digests.
+- [x] Resolve cross-platform Terraform provider locks for all root modules and run provider schema validation.
+- [ ] Select intended EKS/Kubernetes and controller versions; validate Helm compatibility and pin verified container/model digests.
 - [x] Start local pgvector/PostgreSQL, install the pinned local psycopg binary extra, run schema/checkpoint migration and verify API readiness.
 - [x] Download the pinned BGE embedding weights, verify CPU inference and re-index local documents with real vectors.
-- [ ] Verify local Langfuse/ClickHouse/Valkey integration.
+- [x] Verify low-load local Langfuse/ClickHouse/Valkey/SeaweedFS integration and metadata-only admin trace view.
 - [ ] Complete controller/bootstrap IAM, secret materialization, domain/ACM setup and live quota/cost checks.
 - [ ] Deploy and smoke-test staging only after all admission, lifecycle and cost prerequisites pass.
 
@@ -94,8 +96,8 @@ Acceptance evidence: lifecycle tests use fake clients/runners only. Manual mutat
 
 ## Verification and current blockers
 
-Available checks are documented in docs/local-development.md. Current verified scope includes backend regression tests with actual SDK execution/100 turns, standalone frontend behavior, offline 20-case harness, repository/lifecycle/control fixtures, lint/types and static deployment rendering. Final local pass: 27 backend tests, 79 repository/lifecycle/control tests, 15 Node tests, and 20/20 synthetic harness cases passed. Ruff and backend mypy checks passed. These counts do not include GPU or AWS release tests.
+Available checks are documented in docs/local-development.md. Current verified scope includes backend regression tests with actual SDK execution/100 turns, standalone frontend behavior, offline 20-case harness, repository/lifecycle/control fixtures, lint/types and static deployment rendering. Historical baseline pass: 27 backend tests, 79 repository/lifecycle/control tests, 15 Node tests, and 20/20 synthetic harness cases passed at that earlier revision. Ruff and backend mypy checks passed at that revision. These historical counts do not include GPU or AWS release tests; see the remaining-work plan for the latest local repository-check count.
 
-Unverified or missing: cross-platform uv/provider locks, Cognito and admin-revocation browser flows, real CPU embedding weights, broad live Bedrock research quality, complete purge/promotion/restore, live teardown inventory/expiry and enforcement against out-of-band AWS administrators. Docker startup, PostgreSQL migration, a Bedrock tool-call smoke test, a bounded live Bedrock + Tavily run with source links, document upload/index/attachment, a document-grounded live answer and PostgreSQL/checkpoint recovery after API/worker restart are verified. The Cloud runtime skill is present, but no callable Cloud environment tools were found; plugin discovery did not find a suitable connected execution environment. No alternative hosting provider was selected.
+Unverified or missing: Cognito and staging browser acceptance; broad live Bedrock research quality/cost beyond the single bounded sample; GPU results; hosted scans and verified artifact provenance; final account-cost and staging preflight; protected OIDC and lifecycle workflows; complete purge/promotion/restore; live teardown inventory/expiry and enforcement against out-of-band AWS administrators. Local PostgreSQL migration and checkpoint recovery, pinned BGE CPU inference/re-indexing, bounded live Bedrock + Tavily flows, local browser acceptance, low-load Langfuse ingestion, and the active-run no-model lifecycle paths are verified. The Cloud runtime skill is present, but no callable Cloud environment tools were found; plugin discovery did not find a suitable connected execution environment. No alternative hosting provider was selected. See `docs/remaining-work-plan.md` for task-level acceptance and execution order.
 
 Paid deployment admission remains closed. Continue with these unchecked items rather than treating the repository as production-ready.

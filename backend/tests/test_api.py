@@ -19,6 +19,8 @@ def service(tmp_path):
         database_url=f"sqlite:///{tmp_path}/app.db",
         storage_path=tmp_path / "uploads",
         max_upload_bytes=1024,
+        model_provider="fake",
+        embedding_provider="fake",
     )
     factory = create_session_factory(settings)
     migrate(factory)
@@ -31,6 +33,20 @@ def conversation(client):
     response = client.post("/api/conversations", json={"title": "Test research"})
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+def test_runtime_settings_require_real_providers_unless_offline_is_explicit(monkeypatch):
+    for key in ("MODEL_PROVIDER", "BEDROCK_MODEL_ID", "EMBEDDING_PROVIDER", "EMBEDDING_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+
+    with pytest.raises(ValueError, match="BEDROCK_MODEL_ID must be explicitly configured"):
+        Settings()
+
+    with pytest.raises(ValueError, match="EMBEDDING_MODEL must be explicitly configured"):
+        Settings(model_provider="vllm", vllm_base_url="http://inference/v1", vllm_api_key="test")
+
+    offline = Settings(model_provider="fake", embedding_provider="fake")
+    assert (offline.model_provider, offline.embedding_provider) == ("fake", "fake")
 
 
 def test_identity_approval_and_last_owner(service):
@@ -222,6 +238,7 @@ def test_cognito_access_token_validation_ignores_dev_header(service, monkeypatch
         model_provider="vllm",
         vllm_base_url="http://inference/v1",
         vllm_api_key="test-secret",
+        embedding_model="/models/bge-small-en-v1.5",
         cognito_issuer="https://cognito-idp.us-east-1.amazonaws.com/test",
         cognito_client_id="client",
         storage_backend="s3",

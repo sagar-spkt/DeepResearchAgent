@@ -17,9 +17,17 @@ def timestamp():
 class LangfuseMetadataCallback(BaseCallbackHandler):
     raise_error = False
 
-    def __init__(self, settings, run_id, conversation_id=None, user_id=None):
+    def __init__(
+        self,
+        settings,
+        run_id,
+        conversation_id=None,
+        user_id=None,
+        usage_collector=None,
+    ):
         self.settings = settings
         self.run_id = run_id
+        self.usage_collector = usage_collector
         self.batch = []
         self.enabled = bool(
             settings.langfuse_base_url
@@ -59,12 +67,22 @@ class LangfuseMetadataCallback(BaseCallbackHandler):
         usage = None
         if response.generations and response.generations[0]:
             metadata = getattr(response.generations[0][0].message, "usage_metadata", None)
-            if metadata:
+            if (
+                isinstance(metadata, dict)
+                and type(metadata.get("input_tokens")) is int
+                and type(metadata.get("output_tokens")) is int
+                and metadata["input_tokens"] >= 0
+                and metadata["output_tokens"] >= 0
+            ):
                 usage = {
                     "input": metadata.get("input_tokens", 0),
                     "output": metadata.get("output_tokens", 0),
                     "total": metadata.get("total_tokens", 0),
                 }
+                if self.usage_collector is not None:
+                    self.usage_collector.record_model_usage(
+                        usage["input"], usage["output"]
+                    )
         body = {"id": str(run_id), "endTime": timestamp()}
         if usage:
             body["usage"] = usage

@@ -25,11 +25,11 @@ The checker validates repository-specific metadata contracts, generated adapter 
 
 | Subsystem | Current checks and remaining release requirements |
 | --- | --- |
-| Python API/workers | Ruff, mypy and pytest implemented; ownership, retry, cancellation and failure tests run. Cross-platform uv lock remains blocked on registry access. |
-| Next.js UI | Node behavior/module checks and npm lock are present; production build succeeds. Browser/Playwright validation remains outstanding. Current source is JavaScript. |
-| Database/documents | SQLite migration, parsing, deletion, ingestion fencing and isolation regressions run; real PostgreSQL/pgvector tests remain outstanding. |
+| Python API/workers | Ruff, mypy and pytest implemented; ownership, retry, cancellation and failure tests run. Cross-platform `uv.lock` includes runtime, dev, and project build dependencies; CI installs with `uv sync --locked --group dev --group build`. |
+| Next.js UI | Node behavior/module checks and npm lock are present; production build succeeds. Selected Chrome flows for local session, history, upload, report, attachment, memory CRUD, admin trace view, local non-admin denial, and native Langfuse tracing were exercised. Active-run reconnect, cancellation, upload-during-run, Cognito and admin-revocation acceptance remain outstanding. Current source is JavaScript. |
+| Database/documents | SQLite regressions and local PostgreSQL/pgvector migration, checkpoint recovery, upload indexing, and real CPU BGE inference were exercised. Broader concurrency/capacity and production RDS acceptance remain outstanding. |
 | Deep Agents/models | Real SDK offline execution, 100-turn compaction and 20 synthetic cases run. Live Bedrock/vLLM evaluations remain outstanding. |
-| Terraform/Helm | Terraform format, Helm lint/render and Compose config checks run; provider validate, controller/image compatibility and cloud integration remain outstanding. |
+| Terraform/Helm | Cross-platform provider locks are present and all four Terraform roots validate with backend disabled; Helm lint/render and Compose checks run with synthetic release values. Intended EKS/controller compatibility, real artifact digests and cloud integration remain outstanding. |
 | Deployment/lifecycle | Preparation workflows remain deployment-blocked. Require live expiry, staging smoke, backup/restore and teardown inventory evidence before promotion. |
 
 See docs/local-development.md for executable commands. Update this matrix, CI and agent instructions when checks are added; never call outstanding checks passing. Default CI must not need cloud credentials or paid APIs. Fork PRs never receive secrets.
@@ -38,4 +38,4 @@ See docs/local-development.md for executable commands. Update this matrix, CI an
 
 After creating a GitHub repository, configure protected `main`: require PRs, at least one human approval, resolved review conversations, and the `Repository checks` status; prohibit force pushes and deletion. Where the account/plan supports it, require approval of the latest push and prevent bypass. These are administrator actions, not enforced by these files.
 
-Protect the production GitHub environment and restrict deployment identities through OIDC. CI passing and AI review do not authorize deployment or replace a human release decision. Preparation workflows exist, but are not functioning release pipelines; no AWS credentials are stored. Also require Backend behavior, Frontend behavior and Frontend reproducible build statuses once CI is activated.
+Protect the production GitHub environment and restrict deployment identities through OIDC. CI passing and AI review do not authorize deployment or replace a human release decision. Preparation workflows exist, but are not functioning release pipelines; no AWS credentials are stored. Also require Backend behavior, Frontend behavior, Frontend reproducible build, and Container scans and SBOMs statuses once CI is activated.

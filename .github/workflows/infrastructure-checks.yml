@@ -1,0 +1,74 @@
+{
+  "name": "Infrastructure checks",
+  "on": {
+    "pull_request": {},
+    "push": {
+      "branches": [
+        "main"
+      ]
+    },
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "terraform": {
+      "name": "Terraform format and validate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Install pinned Terraform",
+          "uses": "hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e",
+          "with": {
+            "terraform_version": "1.17.1",
+            "terraform_wrapper": false
+          }
+        },
+        {
+          "name": "Format all infrastructure roots",
+          "run": "terraform fmt -check -recursive infra"
+        },
+        {
+          "name": "Initialize providers without remote state or credentials and validate",
+          "run": "set -eu\nfor root in infra/control infra/expiry infra/foundation infra/runtime; do\n  terraform -chdir=\"$root\" init -backend=false -input=false -lockfile=readonly\n  terraform -chdir=\"$root\" validate -no-color\ndone"
+        }
+      ]
+    },
+    "helm": {
+      "name": "Helm schema and render checks",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Install pinned Helm",
+          "uses": "azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4",
+          "with": {
+            "version": "v3.22.1"
+          }
+        },
+        {
+          "name": "Lint and render project charts against the target Kubernetes API",
+          "run": "set -eu\nplaceholder_image=example.invalid/deepresearch-validation@sha256:0000000000000000000000000000000000000000000000000000000000000000\nhelm lint helm/research --kube-version 1.37.0 --set-string backendImage=\"$placeholder_image\" --set-string webImage=\"$placeholder_image\"\nhelm template ci helm/research --namespace research --kube-version 1.37.0 --set-string backendImage=\"$placeholder_image\" --set-string webImage=\"$placeholder_image\" > /dev/null\nhelm lint helm/observability --kube-version 1.37.0 --set-string webImage=\"$placeholder_image\" --set-string workerImage=\"$placeholder_image\" --set-string clickhouseImage=\"$placeholder_image\" --set-string valkeyImage=\"$placeholder_image\" --set environment=staging --set sessionId=ci\nhelm template ci helm/observability --namespace research --kube-version 1.37.0 --set-string webImage=\"$placeholder_image\" --set-string workerImage=\"$placeholder_image\" --set-string clickhouseImage=\"$placeholder_image\" --set-string valkeyImage=\"$placeholder_image\" --set environment=staging --set sessionId=ci > /dev/null"
+        },
+        {
+          "name": "Lint and render pinned AWS Load Balancer Controller chart and image",
+          "run": "set -eu\nhelm pull aws-load-balancer-controller --repo https://aws.github.io/eks-charts --version 1.14.1 --destination \"$RUNNER_TEMP\"\nchart_archive=\"$RUNNER_TEMP/aws-load-balancer-controller-1.14.1.tgz\"\nprintf '%s  %s\\n' '5b9f5bf3d7295d0c61eda2a7aea8c7f3369d51eca406c3dc032b84eacc3893d3' \"$chart_archive\" | shasum -a 256 -c\nmkdir -p \"$RUNNER_TEMP/controller-chart\"\ntar -xzf \"$chart_archive\" -C \"$RUNNER_TEMP/controller-chart\"\nchart=\"$RUNNER_TEMP/controller-chart/aws-load-balancer-controller\"\nhelm lint \"$chart\" --kube-version 1.37.0 --set clusterName=deepresearch-ci --set region=us-east-1 --set vpcId=vpc-00000000 --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller --set-string image.tag=v2.14.1@sha256:13abee6e31c2f25ee91f9ae91aabe4f5bcaf6a70eccd372b36835786d2e0813e\nhelm template aws-load-balancer-controller \"$chart\" --namespace kube-system --kube-version 1.37.0 --set clusterName=deepresearch-ci --set region=us-east-1 --set vpcId=vpc-00000000 --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller --set-string image.tag=v2.14.1@sha256:13abee6e31c2f25ee91f9ae91aabe4f5bcaf6a70eccd372b36835786d2e0813e > /dev/null"
+        }
+      ]
+    }
+  }
+}

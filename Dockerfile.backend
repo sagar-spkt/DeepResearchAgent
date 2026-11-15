@@ -1,20 +1,41 @@
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS dependencies
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 libgomp1 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml ./
+COPY uv.lock ./
 COPY backend ./backend
+COPY scripts/docker_sync.py ./docker_sync.py
 ARG INSTALL_EXTRAS=""
-# Complete a cross-platform dependency lock before promoting this image to AWS.
-RUN if [ -n "$INSTALL_EXTRAS" ]; then pip install --no-cache-dir ".[${INSTALL_EXTRAS}]"; else pip install --no-cache-dir .; fi
+RUN python -m pip install --no-cache-dir uv==0.12.5 && python ./docker_sync.py && rm ./docker_sync.py
+
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends libpq5 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=dependencies /app/.venv /app/.venv
+COPY --from=dependencies /app/backend /app/backend
+ENV PATH="/app/.venv/bin:${PATH}"
 RUN useradd --uid 10001 --create-home research && mkdir -p /app/local-data && chown -R research:research /app/local-data
 USER research
 EXPOSE 8000
 CMD ["uvicorn", "research_app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
-FROM runtime AS embeddings
+FROM dependencies AS embedding-dependencies
 USER root
 ARG EMBEDDING_REVISION
-RUN test -n "$EMBEDDING_REVISION" && pip install --no-cache-dir 'sentence-transformers==5.7.0' && python -c "from sentence_transformers import SentenceTransformer; import os,re; revision=os.environ['EMBEDDING_REVISION']; assert re.fullmatch('[a-f0-9]{40}',revision); SentenceTransformer('BAAI/bge-small-en-v1.5', revision=revision, cache_folder='/opt/models')"
+RUN test -n "$EMBEDDING_REVISION" \
+    && uv sync --locked --no-dev --group build --extra embeddings \
+    && uv sync --locked --no-dev --no-editable --extra embeddings
+ENV PATH="/app/.venv/bin:${PATH}"
+RUN python -c "from sentence_transformers import SentenceTransformer; import os,re; revision=os.environ['EMBEDDING_REVISION']; assert re.fullmatch('[a-f0-9]{40}',revision); SentenceTransformer('BAAI/bge-small-en-v1.5', revision=revision, cache_folder='/opt/models')"
 ENV SENTENCE_TRANSFORMERS_HOME=/opt/models HF_HUB_OFFLINE=1
+RUN ln -s "/opt/models/models--BAAI--bge-small-en-v1.5/snapshots/${EMBEDDING_REVISION}" /opt/models/bge-small-en-v1.5
+
+FROM runtime AS embeddings
+USER root
+COPY --from=embedding-dependencies /app/.venv /app/.venv
+COPY --from=embedding-dependencies /opt/models /opt/models
+ENV SENTENCE_TRANSFORMERS_HOME=/opt/models HF_HUB_OFFLINE=1 EMBEDDING_MODEL=/opt/models/bge-small-en-v1.5
 USER research

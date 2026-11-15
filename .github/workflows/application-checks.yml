@@ -25,8 +25,14 @@
           }
         },
         {
-          "name": "Create isolated Python environment",
-          "run": "python3 -m venv .venv\n.venv/bin/pip install . pytest==9.1.1 ruff==0.17.2 mypy==1.20.2"
+          "uses": "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "name": "Create isolated Python tool environment",
+          "run": "python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'\npython3 -m venv .uv-tool\n.uv-tool/bin/python -m pip install --disable-pip-version-check uv==0.12.5\n.uv-tool/bin/uv sync --locked --group dev --group build"
         },
         {
           "name": "Lint and types",
@@ -87,6 +93,45 @@
         },
         {
           "run": "npm --prefix web ci --ignore-scripts\nnpm --prefix web run build"
+        }
+      ]
+    },
+    "container-security": {
+      "name": "Container scans and SBOMs",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Install pinned Trivy",
+          "uses": "aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567",
+          "with": {
+            "version": "v0.76.2"
+          }
+        },
+        {
+          "name": "Build immutable-input application images",
+          "run": "mkdir -p local-data/ci-artifacts\ndocker build --platform linux/amd64 --target runtime --tag deepresearch-backend:ci --file Dockerfile.backend .\ndocker build --platform linux/amd64 --target embeddings --build-arg EMBEDDING_REVISION=5c38ec7c405ec4b44b94cc5a9bb96e735b38267a --tag deepresearch-embeddings:ci --file Dockerfile.backend .\ndocker build --platform linux/amd64 --tag deepresearch-web:ci --file web/Dockerfile web"
+        },
+        {
+          "name": "Scan and create SBOMs",
+          "run": "set -eu\nfor image in deepresearch-backend:ci deepresearch-embeddings:ci deepresearch-web:ci; do\n  name=${image%:ci}\n  trivy image --scanners vuln,license --severity HIGH,CRITICAL --format json --output \"local-data/ci-artifacts/${name}-trivy.json\" \"$image\"\n  trivy image --format cyclonedx --output \"local-data/ci-artifacts/${name}-sbom.cdx.json\" \"$image\"\n  trivy image --scanners vuln --severity CRITICAL --exit-code 1 \"$image\"\n  trivy image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 1 \"$image\"\ndone"
+        },
+        {
+          "name": "Upload image scan reports and SBOMs",
+          "if": "always()",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+          "with": {
+            "name": "container-security-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "local-data/ci-artifacts/",
+            "if-no-files-found": "warn",
+            "retention-days": 90
+          }
         }
       ]
     }
