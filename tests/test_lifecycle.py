@@ -434,6 +434,34 @@ class AdapterTests(unittest.TestCase):
 
 
 class ScopeRegressionTests(unittest.TestCase):
+    def addon_destroy_plan(self, component, addon_name):
+        plan = tfplan()
+        address = "aws_eks_addon." + component
+        plan["configuration"]["root_module"]["resources"] = [{
+            "address": address, "type": "aws_eks_addon", "mode": "managed",
+            "provider_config_key": "aws",
+        }]
+        plan["resource_changes"] = [{
+            "address": address, "type": "aws_eks_addon", "mode": "managed",
+            "provider_name": "registry.terraform.io/hashicorp/aws",
+            "change": {"actions": ["delete"], "before": {
+                "cluster_name": CONFIG["cluster_name"], "addon_name": addon_name,
+                "tags_all": {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"},
+            }},
+        }]
+        return plan
+
+    def test_network_addons_are_destroyable_only_for_the_expected_cluster_and_name(self):
+        for component, addon_name in [("kube_proxy", "kube-proxy"), ("coredns", "coredns")]:
+            with self.subTest(addon=component):
+                plan = self.addon_destroy_plan(component, addon_name)
+                self.assertEqual(["aws_eks_addon." + component], inspect_destroy(plan, CONFIG))
+                for field, invalid in [("cluster_name", "deepresearch-production"), ("addon_name", "other")]:
+                    plan = self.addon_destroy_plan(component, addon_name)
+                    plan["resource_changes"][0]["change"]["before"][field] = invalid
+                    with self.assertRaisesRegex(Refused, "EKS addon identity mismatch"):
+                        inspect_destroy(plan, CONFIG)
+
     def admin_destroy_plan(self):
         plan = tfplan()
         plan["variables"]["operator_principal_arn"] = {

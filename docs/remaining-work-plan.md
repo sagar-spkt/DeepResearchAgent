@@ -108,6 +108,15 @@ The following tickets make the remaining work executable. `Ready` means local wo
 
 ### Current executable queue
 
+Deployment prerequisite sequence (2026-11-16 continuation):
+
+- [x] Reconcile CoreDNS and kube-proxy with the runtime teardown allowlist; targeted tests accept the exact add-ons and reject wrong cluster/name identities. Live shutdown remains unverified.
+- [ ] Define and review separate deployment, operations and purge permission scopes, including state-lock objects, EKS access and expiry executor permissions.
+- [ ] Implement durable release artifacts and provenance, deployment orchestration, database bootstrap and secret materialization.
+- [ ] Complete backup/restore execution and expiry wiring; verify failure paths offline, then rehearse recovery in staging with synthetic data.
+- [ ] Refresh the exact staging plan, cost, capacity and retained-resource inventory; launch under existing conditional authorization only when prerequisites pass review.
+- [ ] Complete staging acceptance and record endpoints, recovery evidence and final resource disposition.
+
 - [x] TODO-04: document the upgrade and rollback cadence in [docs/eks-upgrade-policy.md](eks-upgrade-policy.md); independent review and repository/Markdown validation passed.
 - [ ] TODO-05: the production workflow now has an explicit manual self-authorization phrase and CI checks are enforced on `main`; workflows still fail closed. Implement operational OIDC jobs only after scoped policies, durable backup/restore, lifecycle execution, and independent platform review.
 - [ ] TODO-07: finish the no-mutation preflight with existing authorized read-only access where available.

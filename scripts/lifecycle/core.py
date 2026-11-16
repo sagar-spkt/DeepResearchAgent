@@ -203,7 +203,10 @@ RUNTIME_ADDRESSES = {
     "aws_eks_access_entry.administrator": "aws_eks_access_entry",
     "aws_eks_access_policy_association.administrator": "aws_eks_access_policy_association",
     **{f"aws_eks_node_group.{name}": "aws_eks_node_group" for name in ["cpu", "gpu"]},
-    **{f"aws_eks_addon.{name}": "aws_eks_addon" for name in ["vpc_cni", "pod_identity", "ebs_csi"]},
+    **{
+        f"aws_eks_addon.{name}": "aws_eks_addon"
+        for name in ["vpc_cni", "kube_proxy", "coredns", "pod_identity", "ebs_csi"]
+    },
     **{
         f"aws_eks_pod_identity_association.{name}": "aws_eks_pod_identity_association"
         for name in ["application", "observability"]
@@ -478,6 +481,8 @@ def inspect_destroy(plan_json, config):
         elif kind == "aws_eks_addon":
             addon = {
                 "vpc_cni": "vpc-cni",
+                "kube_proxy": "kube-proxy",
+                "coredns": "coredns",
                 "pod_identity": "eks-pod-identity-agent",
                 "ebs_csi": "aws-ebs-csi-driver",
             }[address.split(".")[-1]]
