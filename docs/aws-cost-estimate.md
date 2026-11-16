@@ -1,6 +1,6 @@
 # AWS cost estimate (staging and production)
 
-**Status:** preliminary, not a quote, budget cap, or deployment authorization. **Price date:** 2026-11-15. **Region:** `us-east-1`. **Currency:** USD. **Pricing basis:** public AWS on-demand rates, no savings plans, private discounts, Free Tier credits, tax, or support plan. EC2 and RDS unit prices were read from the AWS Price List API using `research-operator`; no infrastructure was created or changed.
+**Status:** preliminary, not a quote, budget cap, or deployment authorization. **Estimate updated:** 2026-11-16. **Price query date:** 2026-11-15. **Region:** `us-east-1`. **Currency:** USD. **Pricing basis:** public AWS on-demand rates, no savings plans, private discounts, Free Tier credits, tax, or support plan. EC2 and RDS unit prices were read from the AWS Price List API using `research-operator`; the price query made no infrastructure changes. Separate control-plane changes are recorded in [the preflight](aws-preflight.md).
 
 ## Modeled runtime
 
@@ -19,6 +19,26 @@ The Terraform baseline creates one EKS cluster, one `m6i.2xlarge` CPU node, one 
 | **Modeled runtime subtotal** | Assumes all listed resources run together | **$2.4438 / hour** |
 
 At the specification's limit of **20 combined environment-hours per month**, this runtime subtotal is **$48.88/month**. A four-hour session is about **$9.78**. This assumes the GPU node is active for every hour; a measured GPU-off period would reduce the estimate. The subnet, ALB, node count, average LCU, and disk assumptions must be checked against the final reviewed Terraform/Helm plan.
+
+## One-day staging run (24 hours)
+
+Using the modeled rates above and the current `us-east-1` On-Demand instance and RDS prices, one 24-hour session is about **$58.65** before usage-driven charges. The project cleanup CodeBuild step can add up to **$0.45** if it runs its full 90-minute timeout, for about **$59.10 total** before scheduler, Step Functions, logs, SQS, data transfer, model, and search usage. The estimate assumes the ALB averages one LCU and does not add a new hosted zone. Displayed line items are rounded independently; the subtotal uses unrounded hourly rates.
+
+| Component | 24-hour estimate |
+| --- | ---: |
+| EKS standard-support cluster | $2.40 |
+| `m6i.2xlarge` CPU node | $9.22 |
+| `g6e.xlarge` GPU node | $44.66 |
+| RDS `db.t4g.small` | $0.77 |
+| RDS 20 GiB storage | $0.08 |
+| 120 GiB gp3 node volumes | $0.32 |
+| ALB plus one average LCU | $0.73 |
+| Four public IPv4 addresses | $0.48 |
+| **Runtime** | **$58.65** |
+| Maximum 90-minute cleanup CodeBuild | $0.45 |
+| **Runtime plus maximum cleanup build** | **$59.10** |
+
+A 24-hour run exceeds the project's four-hour session limit and its 20 combined environment-hours/month. A four-hour session is about **$9.78** in modeled runtime charges, plus up to $0.45 cleanup. The estimate is not a hard cap or launch approval. A one-environment retained baseline is roughly **$6.06–$7.96/month** for three Secrets Manager secrets, one alert KMS key, 22 GiB of retained observability gp3 volumes, two CloudWatch alarms, and a 20–40 GiB RDS snapshot; snapshot allowance and incremental storage can lower the snapshot charge. This excludes the already-existing hosted-zone bill, S3/ECR data, logs, account usage, requests, and model/search costs.
 
 ## Retained resources and usage-dependent charges
 
@@ -70,8 +90,8 @@ The 20-hour schedule implies at most five complete four-hour sessions per month 
 
 - The AWS subtotal excludes Bedrock and Tavily. One authorized 20-case Nova Lite/Tavily evaluation used 64 model generations and 18 Tavily requests (14 reported credits), with a conservative usage-derived upper estimate of $0.16384666; the owner confirmed more than 200 free Tavily credits and pay-as-you-go disabled. This is one workload sample, not a per-run price or future spend cap. See [the evaluation record](live-evaluation-proposal.md); any further live run needs its own explicit limits and authorization.
 - S3 document and backup retention, version counts, ECR image retention/size, and CloudWatch log volume have no agreed caps. The project currently keeps data and versions for restoration, so these costs grow with use.
-- The owner selected Apache-2.0, authorized the `research-operator` profile, and approved using `research.spktsagar.com`. These choices do not change the price table; final release review and the exact staging DNS record plan remain open.
-- The Route 53 hosted zone is delegated from the Cloudflare-served parent domain. Reuse of the existing zone is approved; no new hosted zone is needed for this estimate. Confirm the exact staging record and its current target/health before any DNS change, preserving the apex and personal website.
+- The owner selected Apache-2.0, authorized the `research-operator` profile, and approved using `research.spktsagar.com`. These choices do not change the price table. The stale old-project staging alias has been removed; the new project alias remains open until an authorized staging ALB exists.
+- The Route 53 hosted zone is delegated from the Cloudflare-served parent domain. Reuse of the existing zone is approved; no new hosted zone is needed for this estimate. Create the exact staging alias only after an authorized deployment provides a verified ALB target, preserving the root NS/SOA and personal website.
 - A dated AWS Budget snapshot is recorded in [docs/aws-preflight.md](aws-preflight.md): the unfiltered account-wide $100 monthly budget reported $6.152 actual and $6.226 forecast at 2026-11-15 20:29 UTC. This is not full Cost Explorer/billing-history analysis or a hard cap. Free Tier eligibility and shared account-wide allowances remain unverified; unrelated account usage may change actual charges.
 - Public price-list values and service terms can change. Refresh rates, run the AWS Pricing Calculator with the reviewed final deployment plan, and include existing-account usage before staging authorization. This document does not make an AWS Budget a hard cap.
 
