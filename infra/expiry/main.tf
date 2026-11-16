@@ -76,6 +76,7 @@ resource "aws_iam_role_policy" "artifact_and_logs" {
   ] })
 }
 resource "aws_codebuild_project" "executor" {
+  depends_on     = [aws_iam_role_policy.executor_network]
   name           = local.name
   service_role   = aws_iam_role.executor.arn
   build_timeout  = 90
@@ -159,7 +160,7 @@ resource "aws_iam_role_policy" "scheduler" {
   ] })
 }
 resource "aws_scheduler_schedule" "expiry" {
-  depends_on                   = [aws_eks_access_entry.executor, aws_iam_role_policy.describe_cluster]
+  depends_on                   = [aws_eks_access_entry.executor, aws_iam_role_policy.describe_cluster, aws_iam_role_policy.executor_network]
   name                         = local.name
   schedule_expression          = "at(${var.expire_at_utc})"
   schedule_expression_timezone = "UTC"
