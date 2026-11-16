@@ -56,9 +56,26 @@ resource "aws_cloudwatch_log_group" "cluster" {
   retention_in_days = 7
 }
 
+data "aws_iam_policy_document" "cluster_admin_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = [var.operator_principal_arn]
+    }
+  }
+}
+
+resource "aws_iam_role" "cluster_admin" {
+  name                 = "${local.name}-cluster-admin"
+  description          = "Short-lived EKS administrator access for the authorized project operator."
+  assume_role_policy   = data.aws_iam_policy_document.cluster_admin_trust.json
+  max_session_duration = 3600
+}
+
 resource "aws_eks_access_entry" "administrator" {
   cluster_name  = aws_eks_cluster.main.name
-  principal_arn = var.administrator_role_arn
+  principal_arn = aws_iam_role.cluster_admin.arn
 }
 
 resource "aws_eks_access_policy_association" "administrator" {

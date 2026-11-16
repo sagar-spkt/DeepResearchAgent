@@ -1,6 +1,7 @@
 """Behavior tests use isolated repositories and never require cloud credentials."""
 
 import json
+import shlex
 import shutil
 import sys
 import tempfile
@@ -54,6 +55,33 @@ class RepositoryChecksTest(unittest.TestCase):
         )
         self.assertTrue(any("not SHA-pinned" in e for e in check(self.root)[0]))
 
+    def test_detects_invalid_workflow_shell_without_executing_it(self):
+        workflow = self.root / ".github/workflows/invalid-shell.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        marker = self.root / "workflow-command-was-executed"
+        workflow.write_text(
+            json.dumps(
+                {
+                    "permissions": {"contents": "read"},
+                    "on": {"pull_request": {}},
+                    "jobs": {
+                        "check": {
+                            "steps": [
+                                {"run": "if then\nprintf 'invalid syntax\\n'\nfi"},
+                                {"run": f"touch {shlex.quote(str(marker))}"},
+                            ]
+                        }
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        errors, _ = check(self.root)
+
+        self.assertTrue(any("invalid bash syntax in run block" in error for error in errors))
+        self.assertFalse(marker.exists())
+
     def test_infrastructure_workflow_is_read_only_validation(self):
         workflow = ROOT / ".github/workflows/infrastructure-checks.yml"
         data = json.loads(workflow.read_text())
@@ -80,6 +108,172 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertNotIn("terraform apply", commands)
         self.assertNotIn("id-token", serialized)
         self.assertNotIn("aws-actions/configure-aws-credentials", serialized)
+
+    def test_infrastructure_workflow_renders_admin_console_guards(self):
+        workflow = ROOT / ".github/workflows/infrastructure-checks.yml"
+        data = json.loads(workflow.read_text())
+        default_step = next(
+            step
+            for step in data["jobs"]["helm"]["steps"]
+            if step.get("name") == "Keep the Langfuse console disabled by default"
+        )
+        self.assertIn("helm template ci helm/research", default_step["run"])
+        self.assertIn("if grep -F 'name: research-console'", default_step["run"])
+        self.assertIn("exit 1", default_step["run"])
+        step = next(
+            step
+            for step in data["jobs"]["helm"]["steps"]
+            if step.get("name") == "Render the optional administrator-only Langfuse console"
+        )
+        command = step["run"]
+        self.assertIn('--set-string console.image="$nginx_image"', command)
+        self.assertIn("--set console.enabled=true", command)
+        self.assertIn("research.example.test", command)
+        self.assertIn("auth_request /_admin_access;", command)
+        self.assertIn("proxy_pass http://research-web:3000/api/admin/access;", command)
+        self.assertIn("map $http_cookie $cookie_without_leading_session", command)
+        self.assertIn("~^research_session=[^;]*", command)
+        self.assertIn("(?<session_tail>.*)$", command)
+        self.assertIn("default $http_cookie;", command)
+        self.assertIn("$session_tail;", command)
+        self.assertIn("map $cookie_without_leading_session $native_cookie", command)
+        self.assertIn("(?<session_head>.+?);[[:space:]]*research_session=", command)
+        self.assertIn("(?<session_suffix>;.*|)$", command)
+        self.assertIn("default $cookie_without_leading_session;", command)
+        self.assertIn("$session_head$session_suffix", command)
+        self.assertIn("fastcgi_temp_path /tmp/fastcgi;", command)
+        self.assertIn("uwsgi_temp_path /tmp/uwsgi;", command)
+        self.assertIn("scgi_temp_path /tmp/scgi;", command)
+        self.assertIn("proxy_set_header Cookie $native_cookie;", command)
+        self.assertIn("admin_location=$(awk", command)
+        self.assertIn("langfuse_location=$(awk", command)
+        self.assertIn("The native console must not receive the application session cookie.", command)
+        self.assertIn("The admin authorization subrequest must not receive", command)
+        self.assertIn("proxy_set_header Upgrade", command)
+        self.assertIn("proxy_set_header Connection", command)
+        self.assertIn("grep -Ei '^[[:space:]]*proxy_set_header (Upgrade|Connection)", command)
+        self.assertIn("grep -Eiv '^[[:space:]]*proxy_set_header (Upgrade|Connection)", command)
+        self.assertIn("must not forward WebSocket upgrade headers.", command)
+        self.assertIn("research-console.yaml", command)
+        self.assertIn("nginx_image=ghcr.io/nginx/nginx-unprivileged:1.30.6-alpine3.24@sha256:", command)
+        self.assertIn(
+            "sha256:6b0610b60dff09248d642643a29393543a92eb355b00bbd1d12c7af562ef94c4",
+            command,
+        )
+        self.assertIn("nginx_config=\"$RUNNER_TEMP/research-console.conf\"", command)
+        self.assertIn("--network none --read-only --cap-drop ALL --security-opt no-new-privileges", command)
+        self.assertIn("--entrypoint nginx ghcr.io/nginx/nginx-unprivileged:", command)
+        self.assertIn(" -t\nconsole_container=", command)
+        runtime_launch = next(
+            line for line in command.splitlines() if "docker run --rm --detach" in line
+        )
+        self.assertIn("--network none --read-only --cap-drop ALL", runtime_launch)
+        self.assertNotIn("--entrypoint", runtime_launch)
+        self.assertIn('"$nginx_image"', runtime_launch)
+        self.assertIn("docker exec \"$console_container\" wget -qO-", command)
+        self.assertIn("http://127.0.0.1:8080/healthz", command)
+        self.assertIn("docker stop \"$console_container\"", command)
+
+    def test_application_ci_scans_the_pinned_console_proxy_image(self):
+        application = json.loads(
+            (ROOT / ".github/workflows/application-checks.yml").read_text()
+        )
+        infra = json.loads(
+            (ROOT / ".github/workflows/infrastructure-checks.yml").read_text()
+        )
+        infra_command = next(
+            step["run"]
+            for step in infra["jobs"]["helm"]["steps"]
+            if step.get("name") == "Render the optional administrator-only Langfuse console"
+        )
+        image_line = next(
+            line for line in infra_command.splitlines() if line.startswith("nginx_image=")
+        )
+        nginx_image = image_line.split("=", 1)[1]
+        steps = application["jobs"]["container-security"]["steps"]
+        pull = next(
+            step
+            for step in steps
+            if step.get("name") == "Pull pinned Langfuse console proxy image"
+        )
+        self.assertEqual(f"docker pull {nginx_image}", pull["run"])
+        scan = next(step["run"] for step in steps if step.get("name") == "Scan and create SBOMs")
+        self.assertIn(f"console_image={nginx_image}", scan)
+        self.assertIn("langfuse-console-nginx-trivy.json", scan)
+        self.assertIn("langfuse-console-nginx-sbom.cdx.json", scan)
+        app_scan = next(line for line in scan.splitlines() if "${name}-trivy.json" in line)
+        self.assertIn(
+            "--scanners vuln,license --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",
+            app_scan,
+        )
+        console_scan = next(
+            line for line in scan.splitlines() if "langfuse-console-nginx-trivy.json" in line
+        )
+        self.assertIn(
+            "--scanners vuln,license --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",
+            console_scan,
+        )
+        self.assertIn("--scanners vuln --severity CRITICAL --exit-code 1 \"$console_image\"", scan)
+        self.assertIn(
+            "--scanners vuln --ignore-unfixed --severity HIGH --exit-code 1 \"$console_image\"",
+            scan,
+        )
+
+    def test_application_backend_ci_installs_bedrock_test_extra(self):
+        workflow = ROOT / ".github/workflows/application-checks.yml"
+        data = json.loads(workflow.read_text())
+        commands = [
+            step.get("run", "").splitlines()
+            for step in data["jobs"]["backend"]["steps"]
+        ]
+        sync_command = next(
+            line
+            for block in commands
+            for line in block
+            if ".uv-tool/bin/uv sync " in line
+        )
+        sync_tokens = shlex.split(sync_command)
+        project = (ROOT / "pyproject.toml").read_text()
+        bedrock_test = (ROOT / "backend/tests/test_eval_budget.py").read_text()
+        self.assertIn("--locked", sync_tokens)
+        self.assertTrue(
+            any(
+                sync_tokens[index : index + 2] == ["--extra", "bedrock"]
+                for index in range(len(sync_tokens) - 1)
+            ),
+            sync_tokens,
+        )
+        self.assertIn('bedrock = ["langchain-aws==1.7.3"]', project)
+        self.assertIn("import langchain_aws", bedrock_test)
+
+    def test_expiry_scheduler_dead_letter_queue_has_owner_alarm(self):
+        terraform = (ROOT / "infra/expiry/main.tf").read_text()
+        self.assertIn('resource "aws_cloudwatch_metric_alarm" "scheduler_dead_letter"', terraform)
+        alarm = terraform.split(
+            'resource "aws_cloudwatch_metric_alarm" "scheduler_dead_letter"', 1
+        )[1]
+        alarm = alarm.split("\n}", 1)[0]
+        self.assertIn('namespace           = "AWS/SQS"', alarm)
+        self.assertIn('metric_name         = "ApproximateNumberOfMessagesVisible"', alarm)
+        self.assertIn('QueueName = aws_sqs_queue.dead.name', alarm)
+        self.assertIn("evaluation_periods  = 2", alarm)
+        self.assertIn("datapoints_to_alarm = 2", alarm)
+        self.assertIn("threshold           = 0", alarm)
+        self.assertIn("alarm_actions       = [var.alert_topic_arn]", alarm)
+
+    def test_encrypted_alert_topic_key_policy_allows_only_scoped_services(self):
+        terraform = (ROOT / "infra/foundation/main.tf").read_text()
+        key = terraform.split('resource "aws_kms_key" "alerts"', 1)[1]
+        key = key.split('resource "aws_kms_alias" "alerts"', 1)[0]
+        topic_arn = (
+            '"kms:EncryptionContext:aws:sns:topicArn" = '
+            '"arn:aws:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${local.name}-alerts"'
+        )
+        self.assertIn('Principal = { Service = "cloudwatch.amazonaws.com" }', key)
+        self.assertIn('Principal = { Service = "sns.amazonaws.com" }', key)
+        self.assertIn(topic_arn, key)
+        self.assertIn('"aws:SourceAccount" = data.aws_caller_identity.current.account_id', key)
+        self.assertIn('kms_master_key_id = aws_kms_key.alerts.arn', terraform)
 
     def test_install_preserves_unmanaged_files(self):
         target = self.root / ".claude/agents/implementer.md"

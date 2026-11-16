@@ -53,6 +53,8 @@ def validate_config(config):
         "backup_bucket",
         "trace_bucket",
         "user_pool_id",
+        "alert_topic_arn",
+        "alert_kms_key_arn",
     }
     if not expected.issubset(config):
         raise Refused("Missing configuration: " + ", ".join(sorted(expected - config.keys())))
@@ -80,6 +82,13 @@ def validate_config(config):
         raise Refused("Distinct retained buckets required")
     if not re.fullmatch(r"[a-z0-9-]+_[A-Za-z0-9]+", config["user_pool_id"]):
         raise Refused("Invalid Cognito pool ID")
+    expected_topic = f"arn:aws:sns:{config['region']}:{config['account_id']}:deepresearch-{config['environment']}-alerts"
+    if config["alert_topic_arn"] != expected_topic:
+        raise Refused("Alert topic must match the exact environment foundation output")
+    key_id = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    expected_key = rf"arn:aws:kms:{re.escape(config['region'])}:{config['account_id']}:key/{key_id}"
+    if not re.fullmatch(expected_key, config["alert_kms_key_arn"]):
+        raise Refused("Alert KMS key must be a customer-managed key ARN in the selected account/region")
     return config
 
 
@@ -101,6 +110,7 @@ def backup_plan(config, instant=None):
         ],
         "retained": [
             "Cognito",
+            "SNS alert topic and customer-managed KMS key",
             "S3 versions",
             "Secrets Manager",
             "ECR",
@@ -172,7 +182,7 @@ RUNTIME_ADDRESSES = {
     "aws_db_instance.main": "aws_db_instance",
     **{
         f"aws_iam_role.{name}": "aws_iam_role"
-        for name in ["cluster", "node", "application", "observability", "ebs_csi"]
+        for name in ["cluster", "node", "application", "observability", "ebs_csi", "cluster_admin"]
     },
     "aws_iam_role_policy_attachment.cluster": "aws_iam_role_policy_attachment",
     "aws_iam_role_policy_attachment.ebs_csi": "aws_iam_role_policy_attachment",
@@ -203,6 +213,7 @@ UNTAGGED_TYPES = {
     "aws_route_table_association",
     "aws_iam_role_policy_attachment",
     "aws_iam_role_policy",
+    "aws_eks_access_entry",
     "aws_eks_access_policy_association",
 }
 AWS_SOURCE = "registry.terraform.io/hashicorp/aws"
@@ -371,6 +382,33 @@ def inspect_destroy(plan_json, config):
                 and record.get("arn") == f"arn:aws:iam::{account}:role/{expected}",
                 "IAM role identity mismatch",
             )
+            if address == "aws_iam_role.cluster_admin":
+                operator = variables.get("operator_principal_arn", {}).get("value")
+                require(
+                    isinstance(operator, str)
+                    and re.fullmatch(
+                        rf"arn:aws:iam::{account}:(user|role)/[A-Za-z0-9+=,.@_/-]+",
+                        operator,
+                    ),
+                    "EKS operator principal must be an IAM user or role in the selected account",
+                )
+                try:
+                    trust = json.loads(record.get("assume_role_policy", ""))
+                except (TypeError, json.JSONDecodeError):
+                    raise Refused("EKS administrator role trust policy is invalid") from None
+                statements = trust.get("Statement", []) if isinstance(trust, dict) else []
+                if isinstance(statements, dict):
+                    statements = [statements]
+                require(
+                    isinstance(statements, list)
+                    and len(statements) == 1
+                    and isinstance(statements[0], dict)
+                    and statements[0].get("Effect") == "Allow"
+                    and statements[0].get("Action") == "sts:AssumeRole"
+                    and statements[0].get("Principal") == {"AWS": operator}
+                    and not statements[0].get("Condition"),
+                    "EKS administrator role trust must match the configured operator exactly",
+                )
         elif kind == "aws_iam_role_policy_attachment":
             if address.endswith(".cluster"):
                 role = name + "-cluster"
@@ -411,10 +449,10 @@ def inspect_destroy(plan_json, config):
                 "CloudWatch log group name mismatch",
             )
         elif kind in ["aws_eks_access_entry", "aws_eks_access_policy_association"]:
-            principal = variables.get("administrator_role_arn", {}).get("value")
+            principal = f"arn:aws:iam::{account}:role/{name}-cluster-admin"
+            role = before.get("aws_iam_role.cluster_admin", {})
             require(
-                isinstance(principal, str)
-                and re.fullmatch(f"arn:aws:iam::{account}:role/[A-Za-z0-9+=,.@_/-]+", principal)
+                role.get("arn") == principal
                 and record.get("principal_arn") == principal
                 and record.get("cluster_name") == name,
                 "EKS administrator identity mismatch",

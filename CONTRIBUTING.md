@@ -14,12 +14,14 @@ For tiny changes, keep the process brief. No blanket coverage target or mandator
 
 ## Checks available now
 
+Run repository checks with Python 3.11+ and Bash available on `PATH`. Bash is present by default on the supported macOS/Linux developer systems and the `ubuntu-24.04` CI runner; workflow commands are parsed with `bash -n` and are never executed by the checker.
+
 ```sh
 python3 scripts/check_repository.py
 python3 -m unittest discover -s tests -v
 ```
 
-The checker validates repository-specific metadata contracts, generated adapter consistency, local Markdown file links, TOML/JSON syntax, whitespace, and a limited set of obvious secret signatures. It is not a full vendor schema validator or comprehensive secret scanner.
+The checker validates repository-specific metadata contracts, generated adapter consistency, local Markdown file links, TOML/JSON syntax, Bash syntax in GitHub Actions `run` blocks, whitespace, and a limited set of obvious secret signatures. It does not validate GitHub's full workflow/action schema or expression semantics and is not a comprehensive secret scanner.
 
 ## Subsystem check status
 

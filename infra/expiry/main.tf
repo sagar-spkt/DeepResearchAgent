@@ -188,3 +188,19 @@ resource "aws_cloudwatch_metric_alarm" "expiry_failure" {
   alarm_actions       = [var.alert_topic_arn]
   treat_missing_data  = "notBreaching"
 }
+
+resource "aws_cloudwatch_metric_alarm" "scheduler_dead_letter" {
+  # SQS backlog metrics are approximate; require two samples to avoid paging on a stale single datapoint.
+  alarm_name          = "${local.name}-scheduler-dlq-visible"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.dead.name }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  alarm_actions       = [var.alert_topic_arn]
+  treat_missing_data  = "notBreaching"
+}

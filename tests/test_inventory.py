@@ -23,6 +23,8 @@ CONFIG = {
     "backup_bucket": "deepresearch-staging-backups-123456789012",
     "trace_bucket": "deepresearch-staging-traces-123456789012",
     "user_pool_id": "us-east-1_pool123",
+    "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
+    "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
 }
 TAGS = {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"}
 KEYS = {
@@ -114,6 +116,8 @@ class FakeClient:
                         {"Key": "Component", "Value": "control"},
                     ]
                 }
+            if operation == "list_tags_for_resource":
+                return {"Tags": [{"Key": k, "Value": v} for k, v in TAGS.items()]}
             if operation == "get_item":
                 return {}
             if operation == "describe_cluster":
@@ -175,6 +179,35 @@ class FakeClient:
             if operation == "get_queue_attributes":
                 return {
                     "Attributes": {"QueueArn": arn("sqs", kwargs["QueueUrl"].rsplit("/", 1)[1])}
+                }
+            if operation == "get_topic_attributes":
+                return {
+                    "Attributes": {
+                        "Owner": CONFIG["account_id"],
+                        "KmsMasterKeyId": CONFIG["alert_kms_key_arn"],
+                    }
+                }
+            if operation == "describe_key":
+                return {
+                    "KeyMetadata": {
+                        "Arn": CONFIG["alert_kms_key_arn"],
+                        "KeyId": CONFIG["alert_kms_key_arn"].rsplit("/", 1)[1],
+                        "KeyState": "Enabled",
+                        "KeyManager": "CUSTOMER",
+                        "KeyUsage": "ENCRYPT_DECRYPT",
+                        "KeySpec": "SYMMETRIC_DEFAULT",
+                        "Description": "Encryption key for deepresearch-staging expiry alert topic",
+                    }
+                }
+            if operation == "get_key_rotation_status":
+                return {"KeyRotationEnabled": True}
+            if operation == "list_resource_tags":
+                return {
+                    "Tags": [
+                        {"TagKey": "Project", "TagValue": "deepresearch"},
+                        {"TagKey": "Environment", "TagValue": "staging"},
+                        {"TagKey": "Component", "TagValue": "expiry-alerts"},
+                    ]
                 }
             if operation == "batch_get_projects":
                 return {"projects": [], "projectsNotFound": kwargs["names"]}
@@ -288,12 +321,117 @@ class InventoryTests(unittest.TestCase):
                 "sqs-queue",
                 "control-table",
                 "expiry-dead-letter-queue",
+                "sns-topic",
+                "kms-key",
             },
             {r["kind"] for r in result["retained_resources"]},
         )
         s3 = [kwargs for service, op, kwargs in self.fixtures["calls"] if service == "s3"]
         self.assertTrue(
             s3 and all(value["ExpectedBucketOwner"] == CONFIG["account_id"] for value in s3)
+        )
+
+    def test_foundation_inventory_accounts_encrypted_environment_alert_resources(self):
+        result = self.collect()
+
+        self.assertTrue(result["inventory_complete"], result["errors"])
+        self.assertIn(
+            {
+                "kind": "sns-topic",
+                "id": arn("sns", "deepresearch-staging-alerts"),
+                "billed": True,
+            },
+            result["retained_resources"],
+        )
+        self.assertIn(
+            {"kind": "kms-key", "id": CONFIG["alert_kms_key_arn"], "billed": True},
+            result["retained_resources"],
+        )
+        self.assertIn(
+            (
+                "sns",
+                "get_topic_attributes",
+                {"TopicArn": CONFIG["alert_topic_arn"]},
+            ),
+            self.fixtures["calls"],
+        )
+        self.assertIn(
+            (
+                "sns",
+                "list_tags_for_resource",
+                {"ResourceArn": CONFIG["alert_topic_arn"]},
+            ),
+            self.fixtures["calls"],
+        )
+        self.assertNotIn("list_topics", {op for _service, op, _kwargs in self.fixtures["calls"]})
+
+    def test_unencrypted_or_invalid_alert_key_blocks_inventory_completion(self):
+        self.fixtures["direct"][("sns", "get_topic_attributes")] = {
+            "Attributes": {"Owner": CONFIG["account_id"]}
+        }
+
+        result = self.collect()
+
+        self.assertFalse(result["inventory_complete"])
+        self.assertIn("retained-sns-kms-binding", {item["check"] for item in result["errors"]})
+
+    def test_alert_key_alias_binding_blocks_inventory_completion(self):
+        key_metadata = {
+            "Arn": CONFIG["alert_kms_key_arn"],
+            "KeyId": CONFIG["alert_kms_key_arn"].rsplit("/", 1)[1],
+            "KeyState": "Enabled",
+            "KeyManager": "CUSTOMER",
+            "KeyUsage": "ENCRYPT_DECRYPT",
+            "KeySpec": "SYMMETRIC_DEFAULT",
+            "Description": "Encryption key for deepresearch-staging expiry alert topic",
+        }
+        self.fixtures["direct"][("sns", "get_topic_attributes")] = {
+            "Attributes": {
+                "Owner": CONFIG["account_id"],
+                "KmsMasterKeyId": "alias/deepresearch-staging-alerts",
+            }
+        }
+        self.fixtures["direct"][("kms", "describe_key")] = lambda kwargs: {
+            "KeyMetadata": (
+                {
+                    **key_metadata,
+                    "Arn": "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222",
+                    "KeyId": "22222222-2222-4222-8222-222222222222",
+                }
+                if kwargs["KeyId"] == "alias/deepresearch-staging-alerts"
+                else key_metadata
+            )
+        }
+
+        result = self.collect()
+
+        self.assertFalse(result["inventory_complete"])
+        self.assertIn("retained-sns-kms-binding", {item["check"] for item in result["errors"]})
+
+    def test_expiry_inventory_accounts_scheduler_dead_letter_alarm(self):
+        name = "deepresearch-staging-expiry-session-1"
+        expected_names = [name + "-failed", name + "-scheduler-dlq-visible"]
+        requested_names = []
+        self.fixtures["direct"][("cloudwatch", "describe_alarms")] = lambda kwargs: (
+            requested_names.append(kwargs["AlarmNames"])
+            or {
+                "MetricAlarms": [
+                    {
+                        "AlarmName": alarm_name,
+                        "AlarmArn": arn("cloudwatch", "alarm:" + alarm_name),
+                    }
+                    for alarm_name in expected_names
+                ]
+            }
+        )
+
+        result = self.collect()
+
+        self.assertTrue(result["inventory_complete"], result["errors"])
+        self.assertEqual([expected_names], requested_names)
+        retained = {row["id"] for row in result["retained_resources"] if row["kind"] == "expiry-alarm"}
+        self.assertEqual(
+            {arn("cloudwatch", "alarm:" + alarm_name) for alarm_name in expected_names}, retained
         )
 
     def test_access_denied_is_not_absence(self):
@@ -494,6 +632,11 @@ class InventoryTests(unittest.TestCase):
             ("scheduler", "get_schedule"),
             ("sqs", "get_queue_url"),
             ("cloudwatch", "describe_alarms"),
+            ("sns", "list_tags_for_resource"),
+            ("sns", "get_topic_attributes"),
+            ("kms", "describe_key"),
+            ("kms", "get_key_rotation_status"),
+            ("kms", "list_resource_tags"),
         ):
             with self.subTest(service=service):
                 self.fixtures["direct"][(service, operation)] = {}
@@ -501,6 +644,15 @@ class InventoryTests(unittest.TestCase):
                 del self.fixtures["direct"][(service, operation)]
         self.fixtures["direct"][("codebuild", "batch_get_projects")] = {"projects": []}
         self.assertFalse(self.collect()["runtime_gone"])
+
+    def test_missing_foundation_alert_topic_blocks_completion(self):
+        self.fixtures["errors"][("sns", "get_topic_attributes")] = "NotFoundException"
+
+        result = self.collect()
+
+        self.assertFalse(result["inventory_complete"])
+        self.assertFalse(result["retained_accounted"])
+        self.assertIn("sns:topic-attributes", {item["check"] for item in result["errors"]})
 
 
 class ReleaseTests(unittest.TestCase):

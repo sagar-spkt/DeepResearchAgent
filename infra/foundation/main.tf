@@ -123,6 +123,114 @@ resource "aws_sqs_queue" "research" {
 
 }
 
+resource "aws_kms_key" "alerts" {
+  description             = "Encryption key for ${local.name} expiry alert topic"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableAccountOwnerManagement"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowEnvironmentExpiryAlarmsToUseKey"
+        Effect    = "Allow"
+        Principal = { Service = "cloudwatch.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = [
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-failed",
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-scheduler-dlq-visible",
+            ]
+          }
+        }
+      },
+      {
+        Sid       = "AllowSNSForEnvironmentExpiryTopic"
+        Effect    = "Allow"
+        Principal = { Service = "sns.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount"                      = data.aws_caller_identity.current.account_id
+            "kms:EncryptionContext:aws:sns:topicArn" = "arn:aws:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${local.name}-alerts"
+          }
+          ArnLike = {
+            "aws:SourceArn" = [
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-failed",
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-scheduler-dlq-visible",
+            ]
+          }
+        }
+      },
+    ]
+  })
+  tags = { Component = "expiry-alerts" }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_kms_alias" "alerts" {
+  name          = "alias/${local.name}-alerts"
+  target_key_id = aws_kms_key.alerts.key_id
+}
+
+resource "aws_sns_topic" "alerts" {
+  name              = "${local.name}-alerts"
+  kms_master_key_id = aws_kms_key.alerts.arn
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_sns_topic_policy" "alerts" {
+  arn = aws_sns_topic.alerts.arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowAccountOwnerManagement"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "sns:*"
+        Resource  = aws_sns_topic.alerts.arn
+      },
+      {
+        Sid       = "AllowEnvironmentExpiryAlarmsToPublish"
+        Effect    = "Allow"
+        Principal = { Service = "cloudwatch.amazonaws.com" }
+        Action    = "sns:Publish"
+        Resource  = aws_sns_topic.alerts.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = [
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-failed",
+              "arn:aws:cloudwatch:${var.region}:${data.aws_caller_identity.current.account_id}:alarm:${local.name}-expiry-*-scheduler-dlq-visible",
+            ]
+          }
+        }
+      },
+    ]
+  })
+}
+
 resource "aws_cognito_user_pool" "users" {
 
   name                     = local.name
@@ -183,8 +291,10 @@ output "foundation" {
       for k, v in aws_s3_bucket.data : k => v.id
     }
 
-    queue_url = aws_sqs_queue.research.url
-    queue_arn = aws_sqs_queue.research.arn
+    queue_url         = aws_sqs_queue.research.url
+    queue_arn         = aws_sqs_queue.research.arn
+    alert_topic_arn   = aws_sns_topic.alerts.arn
+    alert_kms_key_arn = aws_kms_key.alerts.arn
     secrets = {
       for k, v in aws_secretsmanager_secret.application : k => v.arn
     }

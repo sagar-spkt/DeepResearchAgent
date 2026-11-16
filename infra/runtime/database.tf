@@ -38,3 +38,7 @@ output "runtime" {
 
 }
 
+output "cluster_admin_role_arn" {
+  value = aws_iam_role.cluster_admin.arn
+}
+

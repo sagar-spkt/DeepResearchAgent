@@ -36,7 +36,7 @@ Prefer existing patterns and documented public APIs; verify current official doc
 
 Test observable behavior and regressions, including failures and authorization boundaries. Do not write tests merely to mirror implementation or pad coverage. See `CONTRIBUTING.md` for the subsystem check matrix. Future commands must not be documented as available until implemented.
 
-Repository checks (Python 3.11+; standard library only):
+Repository checks require Python 3.11+ and system Bash on `PATH` (the Python code uses only the standard library; Bash runs in syntax-only `-n` mode for workflow commands):
 
 ```sh
 python3 scripts/sync_agent_adapters.py --check

@@ -13,8 +13,13 @@ variable "administrator_cidrs" {
   type = list(string)
 }
 
-variable "administrator_role_arn" {
-  type = string
+variable "operator_principal_arn" {
+  type        = string
+  description = "Same-account IAM user or role trusted to assume the short-lived EKS administrator role."
+  validation {
+    condition     = can(regex("^arn:aws:iam::${var.account_id}:(user|role)/.+$", var.operator_principal_arn))
+    error_message = "operator_principal_arn must be an IAM user or role ARN in account_id."
+  }
 }
 
 variable "kubernetes_version" {
@@ -39,7 +44,8 @@ variable "database_instance_class" {
 variable "foundation" {
 
   type = object({
-    buckets = map(string), queue_url = string, queue_arn = string, secrets = map(string)
+    buckets           = map(string), queue_url = string, queue_arn = string, alert_topic_arn = string
+    alert_kms_key_arn = string, secrets = map(string)
     }
   )
 

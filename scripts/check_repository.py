@@ -3,6 +3,8 @@
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from urllib.parse import unquote
@@ -36,6 +38,7 @@ def check(root=ROOT):
         if p.is_file() and not EXCLUDED.intersection(p.relative_to(root).parts)
     )
     digest = hashlib.sha256()
+    bash = shutil.which("bash")
     for path in paths:
         relative = path.relative_to(root).as_posix()
         if path.suffix not in {
@@ -79,6 +82,30 @@ def check(root=ROOT):
                                 r"[^@]+@[0-9a-f]{40}", step["uses"]
                             ):
                                 errors.append(f"{relative}: action is not SHA-pinned")
+                    if bash is None:
+                        errors.append(f"{relative}: bash is required to validate workflow run blocks")
+                    else:
+                        for job_name, job in data.get("jobs", {}).items():
+                            for index, step in enumerate(job.get("steps", []), 1):
+                                script = step.get("run")
+                                if script is None:
+                                    continue
+                                if not isinstance(script, str):
+                                    errors.append(
+                                        f"{relative}: job {job_name}, step {index}: run block must be a string"
+                                    )
+                                    continue
+                                result = subprocess.run(
+                                    [bash, "-n"],
+                                    input=script,
+                                    text=True,
+                                    capture_output=True,
+                                    check=False,
+                                )
+                                if result.returncode:
+                                    errors.append(
+                                        f"{relative}: job {job_name}, step {index}: invalid bash syntax in run block"
+                                    )
             if path.suffix == ".md":
                 if content.startswith("---\n"):
                     read_metadata(path)

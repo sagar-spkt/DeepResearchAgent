@@ -61,6 +61,41 @@ class AWSAdapter:
         )["UserPool"]
         if any(pool.get("UserPoolTags", {}).get(k) != v for k, v in expected.items()):
             raise Refused("Cognito scope mismatch")
+        self.verify_alert_channel()
+
+    def verify_alert_channel(self):
+        topic_arn = self.config["alert_topic_arn"]
+        key_arn = self.config["alert_kms_key_arn"]
+        topic = self.clients["sns"].get_topic_attributes(TopicArn=topic_arn).get("Attributes", {})
+        key = self.clients["kms"].describe_key(KeyId=key_arn)["KeyMetadata"]
+        topic_key_id = topic.get("KmsMasterKeyId")
+        topic_key = (
+            self.clients["kms"].describe_key(KeyId=topic_key_id).get("KeyMetadata", {})
+            if isinstance(topic_key_id, str) and topic_key_id
+            else {}
+        )
+        key_tags = {
+            value["TagKey"]: value["TagValue"]
+            for value in self.clients["kms"].list_resource_tags(KeyId=key_arn).get("Tags", [])
+        }
+        rotation = self.clients["kms"].get_key_rotation_status(KeyId=key_arn)
+        if (
+            topic.get("Owner") != self.config["account_id"]
+            or topic_key.get("Arn") != key_arn
+            or topic_key.get("KeyId") != key.get("KeyId")
+            or key.get("Arn") != key_arn
+            or key.get("KeyId") != key_arn.rsplit("/", 1)[-1]
+            or key.get("KeyState") != "Enabled"
+            or key.get("KeyManager") != "CUSTOMER"
+            or key.get("KeyUsage") != "ENCRYPT_DECRYPT"
+            or key.get("KeySpec") != "SYMMETRIC_DEFAULT"
+            or key.get("Description") != f"Encryption key for deepresearch-{self.config['environment']} expiry alert topic"
+            or rotation.get("KeyRotationEnabled") is not True
+            or key_tags.get("Project") != "deepresearch"
+            or key_tags.get("Environment") != self.config["environment"]
+            or key_tags.get("Component") != "expiry-alerts"
+        ):
+            raise Refused("Alert topic or customer-managed encryption key is not ready")
 
     def verify_scope(self, config):
         if config != self.config:

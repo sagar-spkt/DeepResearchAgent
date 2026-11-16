@@ -11,7 +11,7 @@ terraform -chdir=infra/foundation plan -var-file=/private/path/staging-foundatio
 terraform -chdir=infra/foundation show /private/path/foundation.tfplan
 ```
 
-Apply only the reviewed saved plan after existing authorization. Export the foundation output into a private runtime tfvars file. Include the intended twelve-digit account_id, session_id and an explicitly chosen standard-support kubernetes_version; the provider refuses other accounts and tags runtime resources by session. The foundation creates secret containers, not credential values.
+Apply only the reviewed saved plan after existing authorization. Export the foundation output into a private runtime tfvars file. Include the intended twelve-digit account_id, session_id, an explicitly chosen standard-support kubernetes_version, and the same-account `operator_principal_arn` (the IAM user or role allowed to assume the generated one-hour EKS administrator role); the provider refuses other accounts and tags runtime resources by session. The foundation creates secret containers, not credential values.
 
 ```sh
 terraform -chdir=infra/runtime init -backend-config=/private/path/staging-runtime.backend.hcl
@@ -23,7 +23,8 @@ terraform -chdir=infra/runtime show /private/path/runtime.tfplan
 4. After authorized runtime provisioning, connect to the exact cluster through an approved CIDR:
 
 ```sh
-aws eks update-kubeconfig --region us-east-1 --name deepresearch-staging
+aws eks update-kubeconfig --region us-east-1 --name deepresearch-staging \
+  --role-arn "$(terraform -chdir=infra/runtime output -raw cluster_admin_role_arn)"
 kubectl create namespace research --dry-run=client -o yaml | kubectl apply -f -
 ```
 

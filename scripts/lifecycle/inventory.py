@@ -31,13 +31,18 @@ CLIENTS = (
     "scheduler",
     "dynamodb",
     "cloudwatch",
+    "sns",
+    "kms",
 )
 
 
 def tags(value):
     if isinstance(value, dict):
         return value
-    return {item["Key"]: item["Value"] for item in value or []}
+    return {
+        item.get("Key", item.get("TagKey")): item.get("Value", item.get("TagValue"))
+        for item in value or []
+    }
 
 
 def error_code(exc):
@@ -633,6 +638,82 @@ class InventoryCollector:
                     "retained-queue:" + suffix,
                 )
                 self.record(self.retained, "sqs-queue", url, billed=True)
+        topic_arn = self.config["alert_topic_arn"]
+        self.require(self.arn(topic_arn, "sns", self.name + "-alerts"), "retained-sns-topic-arn")
+        topic = self.call(
+            "sns:topic-attributes",
+            lambda: self.clients["sns"].get_topic_attributes(TopicArn=topic_arn),
+        )
+        attributes = (topic or {}).get("Attributes", {})
+        self.require(
+            attributes.get("Owner") == self.account,
+            "retained-sns-topic-owner",
+        )
+        if topic is not None:
+            result = self.call(
+                "sns:topic-tags",
+                lambda: self.clients["sns"].list_tags_for_resource(ResourceArn=topic_arn),
+            )
+            values = tags((result or {}).get("Tags"))
+            self.require(
+                values.get("Project") == "deepresearch"
+                and values.get("Environment") == self.config["environment"],
+                "retained-sns-topic-tags",
+            )
+            self.record(self.retained, "sns-topic", topic_arn, billed=True)
+        key_arn = self.config["alert_kms_key_arn"]
+        key_result = self.call(
+            "kms:alert-key",
+            lambda: self.clients["kms"].describe_key(KeyId=key_arn),
+        )
+        metadata = (key_result or {}).get("KeyMetadata", {})
+        key_id = metadata.get("KeyId")
+        valid_key = (
+            metadata.get("Arn") == key_arn
+            and key_id == key_arn.rsplit("/", 1)[-1]
+            and self.arn(metadata.get("Arn"), "kms")
+            and metadata.get("KeyState") == "Enabled"
+            and metadata.get("KeyManager") == "CUSTOMER"
+            and metadata.get("KeyUsage") == "ENCRYPT_DECRYPT"
+            and metadata.get("KeySpec") == "SYMMETRIC_DEFAULT"
+            and metadata.get("Description") == f"Encryption key for {self.name} expiry alert topic"
+        )
+        self.require(valid_key, "retained-sns-kms-key")
+        topic_key_id = attributes.get("KmsMasterKeyId")
+        topic_key_result = (
+            self.call(
+                "kms:alert-topic-key-binding",
+                lambda: self.clients["kms"].describe_key(KeyId=topic_key_id),
+            )
+            if isinstance(topic_key_id, str) and topic_key_id
+            else None
+        )
+        topic_key = (topic_key_result or {}).get("KeyMetadata", {})
+        self.require(
+            topic_key.get("Arn") == key_arn and topic_key.get("KeyId") == key_id,
+            "retained-sns-kms-binding",
+        )
+        rotation = self.call(
+            "kms:alert-key-rotation",
+            lambda: self.clients["kms"].get_key_rotation_status(KeyId=key_arn),
+        )
+        self.require(
+            rotation is not None and rotation.get("KeyRotationEnabled") is True,
+            "retained-sns-kms-rotation",
+        )
+        if key_result is not None and self.arn(metadata.get("Arn"), "kms"):
+            key_tags_result = self.call(
+                "kms:alert-key-tags",
+                lambda: self.clients["kms"].list_resource_tags(KeyId=key_arn),
+            )
+            key_tags = tags((key_tags_result or {}).get("Tags"))
+            self.require(
+                key_tags.get("Project") == "deepresearch"
+                and key_tags.get("Environment") == self.config["environment"]
+                and key_tags.get("Component") == "expiry-alerts",
+                "retained-sns-kms-tags",
+            )
+            self.record(self.retained, "kms-key", metadata["Arn"], billed=True)
 
     def expiry(self):
         """Account for optional separate-management expiry resources without deleting them."""
@@ -679,14 +760,17 @@ class InventoryCollector:
             if group.get("logGroupName") == "/aws/codebuild/" + name:
                 self.require(self.arn(group.get("arn"), "logs"), "expiry-loggroup-arn")
                 self.record(self.retained, "expiry-log-group", group["logGroupName"], billed=True)
+        alarm_names = [name + "-failed", name + "-scheduler-dlq-visible"]
         alarm = self.call(
             "cloudwatch:expiry-alarm",
-            lambda: self.clients["cloudwatch"].describe_alarms(AlarmNames=[name + "-failed"]),
+            lambda: self.clients["cloudwatch"].describe_alarms(AlarmNames=alarm_names),
         )
         self.require(alarm is not None and "MetricAlarms" in alarm, "expiry-alarm-response")
         for value in (alarm or {}).get("MetricAlarms", []):
+            alarm_name = value.get("AlarmName")
             self.require(
-                self.arn(value.get("AlarmArn"), "cloudwatch", "alarm:" + name + "-failed"),
+                alarm_name in alarm_names
+                and self.arn(value.get("AlarmArn"), "cloudwatch", "alarm:" + alarm_name),
                 "expiry-alarm-arn",
             )
             self.record(self.retained, "expiry-alarm", value["AlarmArn"], billed=True)

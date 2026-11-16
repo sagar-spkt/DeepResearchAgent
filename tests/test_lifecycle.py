@@ -34,6 +34,9 @@ CONFIG = {
     "backup_bucket": "deepresearch-staging-backups-123456789012",
     "trace_bucket": "deepresearch-staging-traces-123456789012",
     "user_pool_id": "us-east-1_pool123",
+    "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
+    "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+    "operator_principal_arn": "arn:aws:iam::123456789012:user/research-operator",
 }
 
 
@@ -308,6 +311,73 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(Refused):
             adapter.identity()
 
+    def test_alert_channel_requires_environment_customer_key_and_rotation(self):
+        key_id = CONFIG["alert_kms_key_arn"].rsplit("/", 1)[1]
+        sns = SimpleNamespace(
+            get_topic_attributes=lambda **_: {
+                "Attributes": {
+                    "Owner": CONFIG["account_id"],
+                    "KmsMasterKeyId": CONFIG["alert_kms_key_arn"],
+                }
+            }
+        )
+        kms = SimpleNamespace(
+            describe_key=lambda **_: {
+                "KeyMetadata": {
+                    "Arn": CONFIG["alert_kms_key_arn"],
+                    "KeyId": key_id,
+                    "KeyState": "Enabled",
+                    "KeyManager": "CUSTOMER",
+                    "KeyUsage": "ENCRYPT_DECRYPT",
+                    "KeySpec": "SYMMETRIC_DEFAULT",
+                    "Description": "Encryption key for deepresearch-staging expiry alert topic",
+                }
+            },
+            list_resource_tags=lambda **_: {
+                "Tags": [
+                    {"TagKey": "Project", "TagValue": "deepresearch"},
+                    {"TagKey": "Environment", "TagValue": "staging"},
+                    {"TagKey": "Component", "TagValue": "expiry-alerts"},
+                ]
+            },
+            get_key_rotation_status=lambda **_: {"KeyRotationEnabled": True},
+        )
+        adapter = AWSAdapter(CONFIG, {"sns": sns, "kms": kms})
+
+        adapter.verify_alert_channel()
+
+        sns.get_topic_attributes = lambda **_: {
+            "Attributes": {
+                "Owner": CONFIG["account_id"],
+                "KmsMasterKeyId": "alias/deepresearch-staging-alerts",
+            }
+        }
+        adapter.verify_alert_channel()
+        original_describe_key = kms.describe_key
+        kms.describe_key = lambda **kwargs: (
+            {
+                "KeyMetadata": {
+                    "Arn": "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222",
+                    "KeyId": "22222222-2222-4222-8222-222222222222",
+                }
+            }
+            if kwargs["KeyId"] == "alias/deepresearch-staging-alerts"
+            else original_describe_key(**kwargs)
+        )
+        with self.assertRaises(Refused):
+            adapter.verify_alert_channel()
+        kms.describe_key = original_describe_key
+        sns.get_topic_attributes = lambda **_: {
+            "Attributes": {
+                "Owner": CONFIG["account_id"],
+                "KmsMasterKeyId": CONFIG["alert_kms_key_arn"],
+            }
+        }
+
+        kms.get_key_rotation_status = lambda **_: {"KeyRotationEnabled": False}
+        with self.assertRaises(Refused):
+            adapter.verify_alert_channel()
+
     def test_version_inventory_paginates_and_keeps_delete_markers(self):
         pages = [
             {
@@ -364,6 +434,92 @@ class AdapterTests(unittest.TestCase):
 
 
 class ScopeRegressionTests(unittest.TestCase):
+    def admin_destroy_plan(self):
+        plan = tfplan()
+        plan["variables"]["operator_principal_arn"] = {
+            "value": CONFIG["operator_principal_arn"]
+        }
+        tags = {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"}
+        role_arn = "arn:aws:iam::123456789012:role/deepresearch-staging-cluster-admin"
+        trust = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "sts:AssumeRole",
+                    "Principal": {"AWS": CONFIG["operator_principal_arn"]},
+                }
+            ],
+        }
+        role = {
+            "address": "aws_iam_role.cluster_admin",
+            "type": "aws_iam_role",
+            "mode": "managed",
+            "provider_config_key": "aws",
+        }
+        access = {
+            "address": "aws_eks_access_entry.administrator",
+            "type": "aws_eks_access_entry",
+            "mode": "managed",
+            "provider_config_key": "aws",
+        }
+        plan["configuration"]["root_module"]["resources"] = [role, access]
+        plan["resource_changes"] = [
+            {
+                "address": role["address"],
+                "type": role["type"],
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "name": "deepresearch-staging-cluster-admin",
+                        "arn": role_arn,
+                        "assume_role_policy": json.dumps(trust),
+                        "tags_all": tags,
+                    },
+                },
+            },
+            {
+                "address": access["address"],
+                "type": access["type"],
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "principal_arn": role_arn,
+                        "cluster_name": "deepresearch-staging",
+                    },
+                },
+            },
+        ]
+        return plan
+
+    def test_short_lived_eks_admin_role_and_access_binding_are_destroyable(self):
+        plan = self.admin_destroy_plan()
+        self.assertEqual(
+            ["aws_iam_role.cluster_admin", "aws_eks_access_entry.administrator"],
+            inspect_destroy(plan, CONFIG),
+        )
+
+    def test_short_lived_eks_admin_destroy_rejects_wrong_trust_and_access_role(self):
+        plan = self.admin_destroy_plan()
+        trust = json.loads(
+            plan["resource_changes"][0]["change"]["before"]["assume_role_policy"]
+        )
+        trust["Statement"][0]["Principal"]["AWS"] = "arn:aws:iam::123456789012:role/other"
+        plan["resource_changes"][0]["change"]["before"]["assume_role_policy"] = json.dumps(trust)
+        with self.assertRaisesRegex(Refused, "trust must match"):
+            inspect_destroy(plan, CONFIG)
+
+        plan = self.admin_destroy_plan()
+        plan["resource_changes"][1]["change"]["before"]["principal_arn"] = (
+            "arn:aws:iam::123456789012:role/other"
+        )
+        with self.assertRaisesRegex(Refused, "administrator identity mismatch"):
+            inspect_destroy(plan, CONFIG)
+
     def test_provider_region_source_and_account_expressions_must_match(self):
         attacks = [
             ("region", {"constant_value": "us-west-2"}),
@@ -435,6 +591,21 @@ class ScopeRegressionTests(unittest.TestCase):
             changed[key] = "attacker-controlled-bucket"
             with self.assertRaises(Refused):
                 validate_config(changed)
+
+    def test_config_binds_alert_topic_and_kms_key_to_environment(self):
+        from lifecycle.core import validate_config
+
+        for key, value in (
+            ("alert_topic_arn", "arn:aws:sns:us-east-1:123456789012:another-topic"),
+            (
+                "alert_kms_key_arn",
+                "arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111",
+            ),
+        ):
+            with self.subTest(key=key):
+                changed = {**CONFIG, key: value}
+                with self.assertRaises(Refused):
+                    validate_config(changed)
 
     def test_generation_change_or_replacement_requires_new_backup(self):
         generation = 5
