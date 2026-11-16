@@ -306,6 +306,22 @@ class InventoryTests(unittest.TestCase):
     def collect(self):
         return InventoryCollector(CONFIG, self.clients, clock=lambda: 100000).collect()
 
+    def test_leftover_administrator_or_backup_role_blocks_runtime_completion(self):
+        for suffix in ("cluster-admin", "clickhouse-backup"):
+            with self.subTest(role=suffix):
+                name = "deepresearch-staging-" + suffix
+
+                def role(kwargs):
+                    if kwargs["RoleName"] != name:
+                        raise ProviderError("NoSuchEntity")
+                    return {"Role": {"RoleName": name, "Arn": arn("iam", "role/" + name),
+                                     "Tags": [{"Key": k, "Value": v} for k, v in TAGS.items()]}}
+
+                self.fixtures["direct"][("iam", "get_role")] = role
+                result = self.collect()
+                self.assertFalse(result["runtime_gone"])
+                self.assertIn({"kind": "iam-role", "id": name}, result["runtime_remaining"])
+
     def test_clean_provider_inventory_accounts_retention_without_zero_cost_claim(self):
         result = self.collect()
         self.assertTrue(result["runtime_gone"], result["errors"])

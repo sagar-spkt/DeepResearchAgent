@@ -491,7 +491,10 @@ class InventoryCollector:
                 self.record(self.runtime, "load-balancer", lb["LoadBalancerArn"])
 
     def other_runtime(self):
-        for suffix in ("cluster", "node", "application", "observability", "ebs-csi"):
+        for suffix in (
+            "cluster", "cluster-admin", "node", "application", "observability",
+            "clickhouse-backup", "ebs-csi",
+        ):
             result = self.call(
                 "iam:get_role:" + suffix,
                 lambda suffix=suffix: self.clients["iam"].get_role(

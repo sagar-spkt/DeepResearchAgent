@@ -159,6 +159,7 @@ resource "aws_iam_role_policy" "scheduler" {
   ] })
 }
 resource "aws_scheduler_schedule" "expiry" {
+  depends_on                   = [aws_eks_access_entry.executor, aws_iam_role_policy.describe_cluster]
   name                         = local.name
   schedule_expression          = "at(${var.expire_at_utc})"
   schedule_expression_timezone = "UTC"
