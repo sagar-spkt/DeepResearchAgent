@@ -20,7 +20,7 @@ terraform -chdir=infra/runtime plan -var-file=/private/path/staging-runtime.tfva
 terraform -chdir=infra/runtime show /private/path/runtime.tfplan
 ```
 
-3. Before runtime apply: verify the other environment is inactive, current regional estimate fits remaining monthly budget, quotas/capacity are available, and AWS-side expiry/backup/restore has been implemented and rehearsed. Current deployment preflight intentionally refuses deployment because live restore, inventory and common-lease enforcement evidence is incomplete. The shared infra/control table and reviewed admission are now source prerequisites. Do not bypass it for a paid demo.
+3. Before runtime apply: verify the other environment is inactive, current regional estimate fits remaining monthly budget, quotas/capacity are available, and AWS-side expiry/backup/restore implementation has passed offline validation and independent review. The first live recovery rehearsal requires a closed staging environment, synthetic data, and a reviewed provisioning-failure cleanup path as defined in [ADR-0009](../docs/decisions/0009-first-staging-recovery-rehearsal.md). Complete that rehearsal before opening ingress. Current deployment preflight still refuses deployment because operational implementation, inventory and common-lease enforcement evidence are incomplete. The shared infra/control table and reviewed admission are source prerequisites.
 4. After authorized runtime provisioning, connect to the exact cluster through an approved CIDR:
 
 ```sh
