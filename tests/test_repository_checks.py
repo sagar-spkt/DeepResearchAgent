@@ -275,6 +275,12 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertIn('"aws:SourceAccount" = data.aws_caller_identity.current.account_id', key)
         self.assertIn('kms_master_key_id = aws_kms_key.alerts.arn', terraform)
 
+    def test_foundation_provider_is_pinned_to_explicit_account_id(self):
+        terraform = (ROOT / "infra/foundation/versions.tf").read_text()
+        self.assertIn("allowed_account_ids = [var.account_id]", terraform)
+        self.assertIn('condition     = can(regex("^[0-9]{12}$", var.account_id))', terraform)
+        self.assertIn("var.account_id", terraform)
+
     def test_install_preserves_unmanaged_files(self):
         target = self.root / ".claude/agents/implementer.md"
         target.parent.mkdir(parents=True)

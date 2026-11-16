@@ -12,7 +12,7 @@ terraform -chdir=infra/foundation plan -var-file=/private/path/staging-foundatio
 terraform -chdir=infra/foundation show /private/path/foundation.tfplan
 ```
 
-Apply only the reviewed saved plan after existing authorization. Export the foundation output into a private runtime tfvars file. Include the intended twelve-digit account_id, session_id, an explicitly chosen standard-support kubernetes_version, and the same-account `operator_principal_arn` (the IAM user or role allowed to assume the generated one-hour EKS administrator role); the provider refuses other accounts and tags runtime resources by session. The foundation creates secret containers, not credential values.
+The foundation tfvars must include the intended twelve-digit `account_id`, `environment`, `region`, `domain`, and `callback_urls`; the provider's `allowed_account_ids` guard rejects credentials for any other account. Apply only the reviewed saved plan after existing authorization. Export the foundation output into a private runtime tfvars file. Include `account_id`, `session_id`, an explicitly chosen standard-support `kubernetes_version`, and the same-account `operator_principal_arn` (the IAM user or role allowed to assume the generated one-hour EKS administrator role); the runtime provider independently refuses other accounts and tags runtime resources by session. The foundation creates secret containers, not credential values.
 
 ```sh
 terraform -chdir=infra/runtime init -backend-config=/private/path/staging-runtime.backend.hcl

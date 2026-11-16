@@ -19,7 +19,8 @@ terraform {
 
 provider "aws" {
 
-  region = var.region
+  region              = var.region
+  allowed_account_ids = [var.account_id]
   default_tags {
     tags = {
       Project = "deepresearch", Environment = var.environment, ManagedBy = "terraform"
@@ -28,6 +29,14 @@ provider "aws" {
   }
 
 
+}
+
+variable "account_id" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.account_id))
+    error_message = "Specify the intended twelve-digit AWS account ID."
+  }
 }
 
 variable "region" {
