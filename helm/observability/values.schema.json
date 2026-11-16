@@ -6,11 +6,15 @@
     "clickhouseImage",
     "valkeyImage",
     "environment",
-    "sessionId"
+    "sessionId",
+    "clickhouseClientSecretName"
   ],
   "properties": {
     "environment": {
-      "enum": ["staging", "production"]
+      "enum": [
+        "staging",
+        "production"
+      ]
     },
     "sessionId": {
       "type": "string",
@@ -36,6 +40,11 @@
     "valkeyImage": {
       "type": "string",
       "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "clickhouseClientSecretName": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
     }
   }
 }

@@ -182,7 +182,7 @@ RUNTIME_ADDRESSES = {
     "aws_db_instance.main": "aws_db_instance",
     **{
         f"aws_iam_role.{name}": "aws_iam_role"
-        for name in ["cluster", "node", "application", "observability", "ebs_csi", "cluster_admin"]
+        for name in ["cluster", "node", "application", "observability", "ebs_csi", "cluster_admin", "clickhouse_backup"]
     },
     "aws_iam_role_policy_attachment.cluster": "aws_iam_role_policy_attachment",
     "aws_iam_role_policy_attachment.ebs_csi": "aws_iam_role_policy_attachment",
@@ -196,7 +196,7 @@ RUNTIME_ADDRESSES = {
     },
     **{
         f"aws_iam_role_policy.{name}": "aws_iam_role_policy"
-        for name in ["application", "observability"]
+        for name in ["application", "observability", "clickhouse_backup"]
     },
     "aws_eks_cluster.main": "aws_eks_cluster",
     "aws_cloudwatch_log_group.cluster": "aws_cloudwatch_log_group",
@@ -209,7 +209,7 @@ RUNTIME_ADDRESSES = {
     },
     **{
         f"aws_eks_pod_identity_association.{name}": "aws_eks_pod_identity_association"
-        for name in ["application", "observability"]
+        for name in ["application", "observability", "clickhouse_backup"]
     },
 }
 UNTAGGED_TYPES = {
@@ -429,7 +429,7 @@ def inspect_destroy(plan_json, config):
                 "IAM attachment identity mismatch",
             )
         elif kind == "aws_iam_role_policy":
-            role = name + "-" + address.split(".")[-1]
+            role = name + "-" + address.split(".")[-1].replace("_", "-")
             require(
                 record.get("role") == role
                 and record.get("id") == role + ":" + record.get("name", ""),
@@ -491,7 +491,7 @@ def inspect_destroy(plan_json, config):
                 "EKS addon identity mismatch",
             )
         elif kind == "aws_eks_pod_identity_association":
-            suffix = address.split(".")[-1]
+            suffix = address.split(".")[-1].replace("_", "-")
             require(
                 record.get("cluster_name") == name
                 and record.get("namespace") == "research"

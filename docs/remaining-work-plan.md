@@ -111,6 +111,8 @@ The following tickets make the remaining work executable. `Ready` means local wo
 Deployment prerequisite sequence (2026-11-16 continuation):
 
 - [x] Reconcile CoreDNS and kube-proxy with the runtime teardown allowlist; targeted tests accept the exact add-ons and reject wrong cluster/name identities. Live shutdown remains unverified.
+- [x] Implement the backup executor IAM policy generator and ClickHouse backup identity/client configuration. `scripts/lifecycle/policies.py` generates a reviewable backup-only fragment without attaching it. ClickHouse has a separate current-session S3 role/Pod Identity and an existing client-config Secret mount; Langfuse and Valkey do not inherit that role. Exact teardown guards include the new identity. See [backup policy scope](backup-policy.md) and [ClickHouse integration](clickhouse-backup.md). Effective IAM, pinned-image Pod Identity token-file compatibility, Secret materialization, live backup and restore remain open.
+- [x] Resolve the first-live-rehearsal dependency cycle in [ADR-0009](decisions/0009-first-staging-recovery-rehearsal.md). A first closed staging rehearsal can establish live recovery evidence only after operational implementation, exact-plan review, failure cleanup and admission/expiry prerequisites pass; ingress stays closed until recovery succeeds.
 - [ ] Define and review separate deployment, operations and purge permission scopes, including state-lock objects, EKS access and expiry executor permissions.
 - [ ] Implement durable release artifacts and provenance, deployment orchestration, database bootstrap and secret materialization.
 - [ ] Complete backup/restore execution and expiry wiring; verify failure paths offline, then rehearse recovery in staging with synthetic data.

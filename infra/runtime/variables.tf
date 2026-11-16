@@ -29,6 +29,10 @@ variable "kubernetes_version" {
 
 variable "session_id" {
   type = string
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,15}$", var.session_id))
+    error_message = "Session ID must be at most sixteen safe lowercase letters, digits or hyphens."
+  }
 }
 
 variable "database_snapshot_identifier" {

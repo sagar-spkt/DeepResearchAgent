@@ -462,6 +462,29 @@ class ScopeRegressionTests(unittest.TestCase):
                     with self.assertRaisesRegex(Refused, "EKS addon identity mismatch"):
                         inspect_destroy(plan, CONFIG)
 
+    def test_clickhouse_backup_identity_teardown_rejects_other_service_accounts(self):
+        plan = tfplan()
+        address = "aws_eks_pod_identity_association.clickhouse_backup"
+        plan["configuration"]["root_module"]["resources"] = [{
+            "address": address, "type": "aws_eks_pod_identity_association", "mode": "managed",
+            "provider_config_key": "aws",
+        }]
+        before = {
+            "cluster_name": CONFIG["cluster_name"], "namespace": "research",
+            "service_account": "research-clickhouse-backup",
+            "role_arn": "arn:aws:iam::123456789012:role/deepresearch-staging-clickhouse-backup",
+            "tags_all": {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"},
+        }
+        plan["resource_changes"] = [{
+            "address": address, "type": "aws_eks_pod_identity_association", "mode": "managed",
+            "provider_name": "registry.terraform.io/hashicorp/aws",
+            "change": {"actions": ["delete"], "before": before},
+        }]
+        self.assertEqual([address], inspect_destroy(plan, CONFIG))
+        before["service_account"] = "research-observability"
+        with self.assertRaisesRegex(Refused, "Pod Identity binding mismatch"):
+            inspect_destroy(plan, CONFIG)
+
     def admin_destroy_plan(self):
         plan = tfplan()
         plan["variables"]["operator_principal_arn"] = {

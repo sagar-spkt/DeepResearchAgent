@@ -61,6 +61,10 @@
           }
         },
         {
+          "name": "Verify ClickHouse backup identity and configuration isolation",
+          "run": "python3 -m unittest discover -s tests -p test_clickhouse_backup_chart.py -v"
+        },
+        {
           "name": "Lint and render project charts against the target Kubernetes API",
           "run": "set -eu\nplaceholder_image=example.invalid/deepresearch-validation@sha256:0000000000000000000000000000000000000000000000000000000000000000\nhelm lint helm/research --kube-version 1.37.0 --set-string backendImage=\"$placeholder_image\" --set-string webImage=\"$placeholder_image\"\nhelm template ci helm/research --namespace research --kube-version 1.37.0 --set-string backendImage=\"$placeholder_image\" --set-string webImage=\"$placeholder_image\" > /dev/null\nhelm lint helm/observability --kube-version 1.37.0 --set-string webImage=\"$placeholder_image\" --set-string workerImage=\"$placeholder_image\" --set-string clickhouseImage=\"$placeholder_image\" --set-string valkeyImage=\"$placeholder_image\" --set environment=staging --set sessionId=ci\nhelm template ci helm/observability --namespace research --kube-version 1.37.0 --set-string webImage=\"$placeholder_image\" --set-string workerImage=\"$placeholder_image\" --set-string clickhouseImage=\"$placeholder_image\" --set-string valkeyImage=\"$placeholder_image\" --set environment=staging --set sessionId=ci > /dev/null"
         },

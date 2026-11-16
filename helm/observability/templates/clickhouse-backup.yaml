@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: research-clickhouse-backup }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: research-clickhouse-backup }
+data:
+  research-backup.xml: |
+    <clickhouse>
+      <s3>
+        <use_environment_credentials>true</use_environment_credentials>
+      </s3>
+    </clickhouse>
