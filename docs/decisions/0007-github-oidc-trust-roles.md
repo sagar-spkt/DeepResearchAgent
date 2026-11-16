@@ -9,7 +9,7 @@ The AWS account's previous staging and production GitHub roles trusted a differe
 
 ## Decision
 
-Manage both repository-level trust roles in the shared `infra/github-oidc` root and a single versioned S3 Terraform state key. Keep this state separate from session-scoped foundation/runtime/expiry roots. Protect role deletion and both exclusive empty-policy guards with `prevent_destroy`. The root owns only role trust and metadata; it attaches no inline or managed permission policies and detects policy attachment drift. Add AWS permissions only after the operational workflows, exact resource scopes, protected environment approvals, and failure behavior are separately reviewed.
+Manage both repository-level trust roles in the shared `infra/github-oidc` root and a single versioned S3 Terraform state key. Keep this state separate from session-scoped foundation/runtime/expiry roots. Protect role deletion and both exclusive empty-policy guards with `prevent_destroy`. The root owns only role trust and metadata; it attaches no inline or managed permission policies and detects policy attachment drift. Add AWS permissions only after the operational workflows, exact resource scopes, protected branch/environment rules, the owner-started manual production gate, and failure behavior are separately reviewed. The manual gate is self-authorization, not independent review; see ADR-0008.
 
 The root pins the AWS provider and uses the existing account OIDC provider. Its trust conditions require `aud=sts.amazonaws.com`, the exact repository/environment `sub`, and `ref=refs/heads/main`. It never grants `id-token: write` to a workflow or activates an AWS credentials step by itself.
 

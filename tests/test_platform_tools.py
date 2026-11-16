@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -74,6 +75,35 @@ class PlatformToolsTest(unittest.TestCase):
         self.assertEqual("Refused", result["error_type"])
         self.assertIn("promotion", result["detail"].lower())
 
+    def test_production_promotion_requires_exact_manual_confirmation(self):
+        workflow = json.loads((ROOT / ".github/workflows/promote.yml").read_text())
+        step = next(
+            step
+            for step in workflow["jobs"]["preflight"]["steps"]
+            if step.get("name") == "Require deliberate production authorization"
+        )
+        for environment, confirmation, expected in [
+            ("production", "", 1),
+            ("production", "approve", 1),
+            ("production", "I AUTHORIZE PRODUCTION PROMOTION", 0),
+            ("staging", "", 0),
+        ]:
+            with self.subTest(environment=environment, confirmation=confirmation):
+                result = subprocess.run(
+                    ["bash", "-c", step["run"]],
+                    env={
+                        **os.environ,
+                        "TARGET_ENVIRONMENT": environment,
+                        "PRODUCTION_CONFIRMATION": confirmation,
+                        "GITHUB_ACTOR": "test-operator",
+                        "GITHUB_SHA": "a" * 40,
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(expected, result.returncode)
+
     def test_aws_lifecycle_workflows_remain_read_only_and_fail_closed(self):
         expected_operations = {
             "deploy.yml": "deploy",
@@ -92,20 +122,22 @@ class PlatformToolsTest(unittest.TestCase):
                     set(workflow),
                 )
                 self.assertEqual({"contents": "read"}, workflow["permissions"])
+                expected_inputs = {
+                    "environment": {
+                        "type": "choice",
+                        "options": ["staging", "production"],
+                        "required": True,
+                        "default": "staging",
+                    }
+                }
+                if filename == "promote.yml":
+                    expected_inputs["production_confirmation"] = {
+                        "description": "For production only, enter exactly: I AUTHORIZE PRODUCTION PROMOTION",
+                        "type": "string",
+                        "required": False,
+                    }
                 self.assertEqual(
-                    {
-                        "workflow_dispatch": {
-                            "inputs": {
-                                "environment": {
-                                    "type": "choice",
-                                    "options": ["staging", "production"],
-                                    "required": True,
-                                    "default": "staging",
-                                }
-                            }
-                        }
-                    },
-                    workflow["on"],
+                    {"workflow_dispatch": {"inputs": expected_inputs}}, workflow["on"]
                 )
                 self.assertEqual(
                     {
@@ -122,27 +154,39 @@ class PlatformToolsTest(unittest.TestCase):
                 self.assertNotIn("--execute", serialized)
                 self.assertNotIn("terraform apply", serialized)
 
+                expected_steps = [
+                    {
+                        "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                        "with": {"persist-credentials": False},
+                    }
+                ]
+                if filename == "promote.yml":
+                    expected_steps.append(
+                        {
+                            "name": "Require deliberate production authorization",
+                            "env": {
+                                "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
+                                "PRODUCTION_CONFIRMATION": "${{ inputs.production_confirmation }}",
+                            },
+                            "run": "if [[ \"$TARGET_ENVIRONMENT\" == \"production\" && \"$PRODUCTION_CONFIRMATION\" != \"I AUTHORIZE PRODUCTION PROMOTION\" ]]; then echo 'Production promotion requires the exact confirmation phrase.' >&2; exit 1; fi; if [[ \"$TARGET_ENVIRONMENT\" == \"production\" ]]; then echo \"Production self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\"; fi",
+                        }
+                    )
+                expected_steps.append(
+                    {
+                        "name": "Inspect lifecycle readiness (fails closed until implementation completes)",
+                        "env": {"TARGET_ENVIRONMENT": "${{ inputs.environment }}"},
+                        "run": (
+                            f'python3 scripts/platform_lifecycle.py {operation} '
+                            '--environment "$TARGET_ENVIRONMENT"'
+                        ),
+                    }
+                )
                 self.assertEqual(
                     {
                         "runs-on": "ubuntu-24.04",
                         "environment": "${{ inputs.environment }}",
                         "timeout-minutes": 5,
-                        "steps": [
-                            {
-                                "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
-                                "with": {"persist-credentials": False},
-                            },
-                            {
-                                "name": "Inspect lifecycle readiness (fails closed until implementation completes)",
-                                "env": {
-                                    "TARGET_ENVIRONMENT": "${{ inputs.environment }}"
-                                },
-                                "run": (
-                                    f'python3 scripts/platform_lifecycle.py {operation} '
-                                    '--environment "$TARGET_ENVIRONMENT"'
-                                ),
-                            },
-                        ],
+                        "steps": expected_steps,
                     },
                     workflow["jobs"]["preflight"],
                 )
