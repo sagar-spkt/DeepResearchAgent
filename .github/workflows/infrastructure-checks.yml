@@ -38,7 +38,7 @@
         },
         {
           "name": "Initialize providers without remote state or credentials and validate",
-          "run": "set -eu\nfor root in infra/control infra/expiry infra/foundation infra/runtime; do\n  terraform -chdir=\"$root\" init -backend=false -input=false -lockfile=readonly\n  terraform -chdir=\"$root\" validate -no-color\ndone"
+          "run": "set -eu\nfor root in infra/control infra/expiry infra/foundation infra/github-oidc infra/runtime; do\n  terraform -chdir=\"$root\" init -backend=false -input=false -lockfile=readonly\n  terraform -chdir=\"$root\" validate -no-color\ndone"
         }
       ]
     },

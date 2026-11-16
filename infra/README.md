@@ -1,12 +1,12 @@
 # AWS deployment foundation
 
-These configurations are reviewable infrastructure source, not a verified deployed environment. No AWS changes have been applied.
+These configurations are reviewable infrastructure source, not a verified deployed application environment. The repository GitHub OIDC trust roles exist in AWS and are managed by the separate `github-oidc` root in shared versioned state. No application, staging, or production environment has been provisioned.
 
 ## State and order
 
 Bootstrap an encrypted versioned S3 Terraform-state bucket separately. Supply per-environment backend configuration using the examples. Foundation contains retained documents/backups/traces buckets, identity, secret containers, image repositories, queues, and an environment-scoped SNS alert topic encrypted by a dedicated customer-managed KMS key. Its output includes `alert_topic_arn` and `alert_kms_key_arn`; pass the topic ARN to the expiry stack. The SNS topic and KMS key policies allow only this environment's expiry CloudWatch alarms to publish/use the key, while preserving account-owner topic/key management. The email or other endpoint subscription must be added and confirmed separately after apply; no recipient address is stored in Terraform. Runtime creates the VPC, EKS, node groups and private RDS. Feed the foundation output into runtime variables explicitly. Never share state keys across environments.
 
-Initialize each layer with `terraform init -backend-config=...`, then `terraform plan -out=...`; inspect the exact saved plan before apply. Provider locks for all four root modules pin AWS provider 6.20.0 and include Linux amd64/arm64 and macOS amd64/arm64 checksums. Backend-disabled `terraform validate` passed for each root; provider binaries/checksums are not vendored here.
+Initialize each layer with `terraform init -backend-config=...`, then `terraform plan -out=...`; inspect the exact saved plan before apply. Use the shared `infra/environments/shared/github-oidc.backend.hcl.example` key for repository OIDC roles, separate from per-environment runtime state. Provider locks for all five root modules pin AWS provider 6.20.0 and include Linux amd64/arm64 and macOS amd64/arm64 checksums. Backend-disabled `terraform validate` passed for all five roots; provider binaries/checksums are not vendored here.
 
 ## Deliberate deployment prerequisites
 
