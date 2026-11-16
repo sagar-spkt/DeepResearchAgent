@@ -8,14 +8,14 @@ AWS's [CodeBuild VPC guide](https://docs.aws.amazon.com/codebuild/latest/usergui
 
 ## Integration gates
 
-The root outputs its VPC ID/CIDR, private subnet list, private route table ID, executor security group list, NAT gateway/allocation IDs and public EIP. Runtime peering, routes, private EKS endpoint access, CodeBuild ENI permissions and executor authorization are not implemented by this root. The operator must verify private endpoint DNS resolution and TCP/443 reachability before enabling expiry or application writers. An attached security group permitting HTTPS is not proof of endpoint reachability.
+The root outputs its VPC ID/CIDR, private subnet list, private route table ID, executor security group list, NAT gateway/allocation IDs and public EIP. For the initial design, include that public EIP as an exact `/32` in the runtime EKS API allowlist, along with approved operator host addresses. EKS authentication and namespace RBAC remain mandatory. The executor uses Kubernetes API calls for pods and AWS APIs for snapshots; it needs no direct RDS connection or runtime peering. CodeBuild ENI permissions, input wiring and live endpoint access are still open. Verify DNS/TLS and TCP/443 reachability from the real runner, plus denial from unauthorized sources, before enabling expiry or application writers. See ADR-0010.
 
-Route tables deliberately contain no inline routes; standalone default routes avoid competing ownership when reviewed runtime peering routes are added. The management root must not also own a route that the runtime root manages. Keep management state separate from runtime so it survives cluster/VPC destruction. The staging backend example uses `deepresearch/staging/management.tfstate`; preserve its encrypted versioned state until cleanup and resource inventory succeed. A state key must never be reused for concurrent sessions.
+Route tables deliberately contain no inline routes; standalone default routes avoid competing ownership if separately reviewed connectivity routes are needed later. The management root must not also own a route that the runtime root manages. Keep management state separate from runtime so it survives cluster/VPC destruction. The staging backend example uses `deepresearch/staging/management.tfstate`; preserve its encrypted versioned state until cleanup and resource inventory succeed. A state key must never be reused for concurrent sessions.
 
 ## Cleanup order
 
 1. Provision this network before the VPC-attached executor. Use a reviewed exact plan and the existing lifecycle admission/lease.
-2. Configure runtime peering, private EKS access, executor IAM/RBAC and expiry. Prove backup prerequisites before starting application writers.
+2. Configure the EKS API's NAT `/32` allowlist, executor IAM/RBAC and expiry. Prove endpoint reachability and backup prerequisites before starting application writers.
 3. The VPC executor backs up data, destroys runtime, publishes its final receipt and exits while its management subnet/NAT remain available.
 4. An external runner without a management-VPC attachment verifies the executor build is terminal, its ENIs are gone, and runtime cleanup evidence is complete. It then removes session expiry infrastructure and the management network, waits for NAT deletion, releases the EIP, and verifies remaining resources before closing admission.
 

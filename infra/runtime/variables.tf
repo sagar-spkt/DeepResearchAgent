@@ -10,7 +10,18 @@ variable "availability_zones" {
 }
 
 variable "administrator_cidrs" {
-  type = list(string)
+  type        = list(string)
+  nullable    = false
+  description = "Distinct IPv4 /32 source addresses allowed to reach the public EKS API, including the session management NAT address and any approved operator address."
+  validation {
+    condition = length(var.administrator_cidrs) > 0 && length(distinct(var.administrator_cidrs)) == length(var.administrator_cidrs) && alltrue([
+      for cidr in var.administrator_cidrs : try(
+        cidrnetmask(cidr) == "255.255.255.255" && cidr == "${cidrhost(cidr, 0)}/32",
+        false
+      )
+    ])
+    error_message = "EKS public access requires a nonempty, unique list of canonical IPv4 /32 host CIDRs; network ranges, IPv6 and malformed entries are not allowed."
+  }
 }
 
 variable "operator_principal_arn" {
