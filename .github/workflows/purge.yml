@@ -11,6 +11,11 @@
           ],
           "required": true,
           "default": "staging"
+        },
+        "confirmation": {
+          "description": "For staging: I AUTHORIZE STAGING PURGE. For production: I AUTHORIZE PRODUCTION PURGE.",
+          "type": "string",
+          "required": false
         }
       }
     }
@@ -33,6 +38,14 @@
           "with": {
             "persist-credentials": false
           }
+        },
+        {
+          "name": "Require separate explicit purge authorization",
+          "env": {
+            "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
+            "CONFIRMATION": "${{ inputs.confirmation }}"
+          },
+          "run": "case \"$TARGET_ENVIRONMENT:$CONFIRMATION\" in staging:'I AUTHORIZE STAGING PURGE'|production:'I AUTHORIZE PRODUCTION PURGE') ;; *) echo 'Purge requires the exact environment-specific confirmation phrase.' >&2; exit 1 ;; esac; echo \"Purge self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\""
         },
         {
           "name": "Inspect lifecycle readiness (fails closed until implementation completes)",

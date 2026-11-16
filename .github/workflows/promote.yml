@@ -5,12 +5,9 @@
       "inputs": {
         "environment": {
           "type": "choice",
-          "options": [
-            "staging",
-            "production"
-          ],
+          "options": ["production"],
           "required": true,
-          "default": "staging"
+          "default": "production"
         },
         "production_confirmation": {
           "description": "For production only, enter exactly: I AUTHORIZE PRODUCTION PROMOTION",
@@ -45,7 +42,7 @@
             "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
             "PRODUCTION_CONFIRMATION": "${{ inputs.production_confirmation }}"
           },
-          "run": "if [[ \"$TARGET_ENVIRONMENT\" == \"production\" && \"$PRODUCTION_CONFIRMATION\" != \"I AUTHORIZE PRODUCTION PROMOTION\" ]]; then echo 'Production promotion requires the exact confirmation phrase.' >&2; exit 1; fi; if [[ \"$TARGET_ENVIRONMENT\" == \"production\" ]]; then echo \"Production self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\"; fi"
+          "run": "if [[ \"$TARGET_ENVIRONMENT\" != \"production\" || \"$PRODUCTION_CONFIRMATION\" != \"I AUTHORIZE PRODUCTION PROMOTION\" ]]; then echo 'Production promotion requires the exact confirmation phrase.' >&2; exit 1; fi; echo \"Production self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\""
         },
         {
           "name": "Inspect lifecycle readiness (fails closed until implementation completes)",

@@ -5,12 +5,14 @@
       "inputs": {
         "environment": {
           "type": "choice",
-          "options": [
-            "staging",
-            "production"
-          ],
+          "options": ["staging"],
           "required": true,
           "default": "staging"
+        },
+        "staging_confirmation": {
+          "description": "Enter exactly: I AUTHORIZE STAGING DEPLOYMENT",
+          "type": "string",
+          "required": false
         }
       }
     }
@@ -33,6 +35,14 @@
           "with": {
             "persist-credentials": false
           }
+        },
+        {
+          "name": "Require deliberate staging authorization",
+          "env": {
+            "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
+            "STAGING_CONFIRMATION": "${{ inputs.staging_confirmation }}"
+          },
+          "run": "if [[ \"$TARGET_ENVIRONMENT\" != \"staging\" || \"$STAGING_CONFIRMATION\" != \"I AUTHORIZE STAGING DEPLOYMENT\" ]]; then echo 'Staging deployment requires the exact confirmation phrase.' >&2; exit 1; fi; echo \"Staging self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\""
         },
         {
           "name": "Inspect lifecycle readiness (fails closed until implementation completes)",
