@@ -711,6 +711,29 @@ locals {
       Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestedRegion" = var.region, "ec2:CreateAction" = "RunInstances" }) }
     },
     {
+      Sid      = "TagOnlyTheManagementSessionRunnerVolumeAtLaunch"
+      Effect   = "Allow"
+      Action   = ["ec2:CreateTags"]
+      Resource = "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:volume/*"
+      Condition = {
+        StringEquals = merge(local.staging_resource_tags, {
+          "aws:RequestTag/Component" = "management-network"
+          "aws:RequestTag/ManagedBy" = "terraform"
+          "aws:RequestedRegion"      = var.region
+          "ec2:CreateAction"         = "RunInstances"
+          "ec2:Region"               = var.region
+        })
+        "ForAllValues:StringEquals" = { "aws:TagKeys" = ["Project", "Environment", "Session", "Component", "ManagedBy"] }
+        Null = {
+          "aws:RequestTag/Project"     = "false"
+          "aws:RequestTag/Environment" = "false"
+          "aws:RequestTag/Session"     = "false"
+          "aws:RequestTag/Component"   = "false"
+          "aws:RequestTag/ManagedBy"   = "false"
+        }
+      }
+    },
+    {
       Sid       = "ManageSessionTaggedRunnerIAM"
       Effect    = "Allow"
       Action    = ["iam:DeleteRole", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile", "iam:UntagInstanceProfile"]
