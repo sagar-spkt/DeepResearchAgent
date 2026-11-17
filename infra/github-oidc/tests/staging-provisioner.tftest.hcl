@@ -107,6 +107,11 @@ run "staging_provisioning_roles_are_stack_and_session_bound" {
   }
 
   assert {
+    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "TagOnlyNewManagementEgressRules"]).Action == ["ec2:CreateTags"] && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "TagOnlyNewManagementEgressRules"]).Condition.StringEquals["ec2:CreateAction"] == "AuthorizeSecurityGroupEgress" && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "TagOnlyNewManagementEgressRules"]).Condition.StringEquals["aws:RequestTag/Component"] == "management-network"
+    error_message = "EC2 may tag only management egress rules during their creation, with the exact resource component."
+  }
+
+  assert {
     condition     = !strcontains(aws_iam_policy.staging_provisioner["runtime-service"].policy, "rds:DeleteDBInstance") && !strcontains(aws_iam_policy.staging_provisioner["runtime-service"].policy, "rds:DeleteDBSnapshot")
     error_message = "Provisioning must preserve the staging database and snapshots."
   }
