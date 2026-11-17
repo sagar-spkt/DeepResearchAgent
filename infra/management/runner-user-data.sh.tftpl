@@ -200,7 +200,6 @@ cd /opt/actions-runner
 token=$(cat /run/actions-runner/token)
 ./config.sh --unattended --disableupdate --ephemeral --url 'https://github.com/${repository}' --token "$token" --labels 'self-hosted,linux,staging-vpc' --name 'staging-${session_id}'
 unset token
-rm -f /run/actions-runner/token
 CONFIG
 chown root:docker /opt/actions-runner/configure-once.sh
 chmod 750 /opt/actions-runner/configure-once.sh

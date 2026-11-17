@@ -31,6 +31,10 @@ class RunnerBootstrapTests(unittest.TestCase):
         )
         self.assertNotIn("$token", wrapper_command)
         self.assertNotIn("--token", wrapper_command)
+        configure_body = source.split("cat >/opt/actions-runner/configure-once.sh <<'CONFIG'\n", 1)[1].split(
+            "\nCONFIG\n", 1
+        )[0]
+        self.assertNotIn("rm -f /run/actions-runner/token", configure_body)
 
     def test_token_file_is_protected_and_removed_before_runner_service(self) -> None:
         source = USER_DATA.read_text()
