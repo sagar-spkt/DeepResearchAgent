@@ -126,6 +126,7 @@ def tfplan(kind="aws_vpc"):
                     "before": {
                         "id": "vpc-0123456789abcdef0",
                         "owner_id": CONFIG["account_id"],
+                        "cidr_block": "10.60.0.0/16",
                         "tags_all": {
                             "Project": "deepresearch",
                             "Environment": "staging",
@@ -208,6 +209,182 @@ class CoreTests(unittest.TestCase):
             value["resource_changes"][0]["change"]["actions"] = actions
             with self.assertRaises(Refused):
                 inspect_destroy(value, CONFIG)
+
+    def test_gpu_subnets_and_route_associations_are_exactly_network_bound(self):
+        tags = {
+            "Project": "deepresearch",
+            "Environment": "staging",
+            "Session": "session-1",
+        }
+        for name, number in [("gpu", 2), ("gpu_fallback", 3)]:
+            with self.subTest(subnet=name):
+                plan = tfplan()
+                subnet = f"aws_subnet.{name}"
+                association = f"aws_route_table_association.{name}"
+                resources = [
+                    ("aws_vpc.main", "aws_vpc"),
+                    ("aws_route_table.public", "aws_route_table"),
+                    (subnet, "aws_subnet"),
+                    (association, "aws_route_table_association"),
+                ]
+                plan["configuration"]["root_module"]["resources"] = [
+                    {
+                        "address": address,
+                        "type": kind,
+                        "mode": "managed",
+                        "provider_config_key": "aws",
+                    }
+                    for address, kind in resources
+                ]
+                subnet_id = f"subnet-{number:08x}"
+                route_table_id = "rtb-0123456789abcdef0"
+                before = {
+                    "aws_vpc.main": {
+                        "id": "vpc-0123456789abcdef0",
+                        "owner_id": CONFIG["account_id"],
+                        "cidr_block": "10.60.0.0/16",
+                        "tags_all": tags,
+                    },
+                    "aws_route_table.public": {
+                        "id": route_table_id,
+                        "vpc_id": "vpc-0123456789abcdef0",
+                        "tags_all": tags,
+                    },
+                    subnet: {
+                        "id": subnet_id,
+                        "vpc_id": "vpc-0123456789abcdef0",
+                        "cidr_block": f"10.60.{number}.0/24",
+                        "map_public_ip_on_launch": True,
+                        "tags_all": tags,
+                    },
+                    association: {
+                        "subnet_id": subnet_id,
+                        "route_table_id": route_table_id,
+                    },
+                }
+                plan["resource_changes"] = [
+                    {
+                        "address": address,
+                        "type": kind,
+                        "mode": "managed",
+                        "provider_name": "registry.terraform.io/hashicorp/aws",
+                        "change": {"actions": ["delete"], "before": before[address]},
+                    }
+                    for address, kind in resources
+                ]
+                self.assertEqual(
+                    [address for address, _ in resources], inspect_destroy(plan, CONFIG)
+                )
+
+                plan["resource_changes"][2]["change"]["before"]["cidr_block"] = (
+                    "10.60.250.0/24"
+                )
+                with self.assertRaisesRegex(Refused, "Subnet CIDR/public mapping mismatch"):
+                    inspect_destroy(plan, CONFIG)
+
+                plan["resource_changes"][2]["change"]["before"]["cidr_block"] = (
+                    f"10.60.{number}.0/24"
+                )
+                plan["resource_changes"][2]["change"]["before"][
+                    "map_public_ip_on_launch"
+                ] = False
+                with self.assertRaisesRegex(Refused, "Subnet CIDR/public mapping mismatch"):
+                    inspect_destroy(plan, CONFIG)
+                plan["resource_changes"][2]["change"]["before"][
+                    "map_public_ip_on_launch"
+                ] = True
+
+                plan["resource_changes"][3]["change"]["before"]["subnet_id"] = (
+                    "subnet-ffffffff"
+                )
+                with self.assertRaisesRegex(Refused, "Route association identity mismatch"):
+                    inspect_destroy(plan, CONFIG)
+                plan["resource_changes"][3]["change"]["before"]["subnet_id"] = subnet_id
+                plan["resource_changes"][3]["change"]["before"]["route_table_id"] = (
+                    "rtb-ffffffff"
+                )
+                with self.assertRaisesRegex(Refused, "Route association identity mismatch"):
+                    inspect_destroy(plan, CONFIG)
+
+    def test_runtime_destroy_binds_exact_vpc_cidr(self):
+        plan = tfplan()
+        plan["resource_changes"][0]["change"]["before"]["cidr_block"] = "0.0.0.0/0"
+        with self.assertRaisesRegex(Refused, "Runtime VPC CIDR mismatch"):
+            inspect_destroy(plan, CONFIG)
+
+    def test_gpu_node_group_identity_matches_gpu_flex_and_all_runtime_subnets(self):
+        tags = {
+            "Project": "deepresearch",
+            "Environment": "staging",
+            "Session": "session-1",
+        }
+        vpc_id = "vpc-0123456789abcdef0"
+        subnet_values = {
+            "aws_subnet.public[0]": ("subnet-00000001", "10.60.0.0/24"),
+            "aws_subnet.public[1]": ("subnet-00000002", "10.60.1.0/24"),
+            "aws_subnet.gpu": ("subnet-00000003", "10.60.2.0/24"),
+            "aws_subnet.gpu_fallback": ("subnet-00000004", "10.60.3.0/24"),
+        }
+        addresses = ["aws_vpc.main", *subnet_values, "aws_eks_node_group.gpu"]
+        kinds = {
+            "aws_vpc.main": "aws_vpc",
+            **{address: "aws_subnet" for address in subnet_values},
+            "aws_eks_node_group.gpu": "aws_eks_node_group",
+        }
+        plan = tfplan()
+        declarations = list(dict.fromkeys(address.split("[")[0] for address in addresses))
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": address,
+                "type": kinds.get(address, kinds.get(address + "[0]")),
+                "mode": "managed",
+                "provider_config_key": "aws",
+            }
+            for address in declarations
+        ]
+        before = {
+            "aws_vpc.main": {
+                "id": vpc_id,
+                "owner_id": CONFIG["account_id"],
+                "cidr_block": "10.60.0.0/16",
+                "tags_all": tags,
+            },
+            "aws_eks_node_group.gpu": {
+                "cluster_name": "deepresearch-staging",
+                "node_group_name": "gpu-flex",
+                "node_role_arn": "arn:aws:iam::123456789012:role/deepresearch-staging-node",
+                "subnet_ids": [value[0] for value in subnet_values.values()],
+                "tags_all": tags,
+            },
+        }
+        for address, (subnet_id, cidr) in subnet_values.items():
+            before[address] = {
+                "id": subnet_id,
+                "vpc_id": vpc_id,
+                "cidr_block": cidr,
+                "map_public_ip_on_launch": True,
+                "tags_all": tags,
+            }
+        plan["resource_changes"] = [
+            {
+                "address": address,
+                "type": kinds[address],
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {"actions": ["delete"], "before": before[address]},
+            }
+            for address in addresses
+        ]
+        self.assertEqual(addresses, inspect_destroy(plan, CONFIG))
+
+        plan["resource_changes"][-1]["change"]["before"]["node_group_name"] = "gpu"
+        with self.assertRaisesRegex(Refused, "Node group identity mismatch"):
+            inspect_destroy(plan, CONFIG)
+
+        plan["resource_changes"][-1]["change"]["before"]["node_group_name"] = "gpu-flex"
+        plan["resource_changes"][-1]["change"]["before"]["subnet_ids"].pop()
+        with self.assertRaisesRegex(Refused, "Node group subnet mismatch"):
+            inspect_destroy(plan, CONFIG)
 
     def test_saved_plan_hash_and_receipt_bound_before_apply(self):
         with tempfile.TemporaryDirectory() as tmp:

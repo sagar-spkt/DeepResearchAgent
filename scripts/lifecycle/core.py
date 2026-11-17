@@ -173,11 +173,15 @@ RUNTIME_ADDRESSES = {
         for kind in ["public", "private"]
         for index in range(2)
     },
+    "aws_subnet.gpu": "aws_subnet",
+    "aws_subnet.gpu_fallback": "aws_subnet",
     "aws_route_table.public": "aws_route_table",
     **{
         f"aws_route_table_association.public[{index}]": "aws_route_table_association"
         for index in range(2)
     },
+    "aws_route_table_association.gpu": "aws_route_table_association",
+    "aws_route_table_association.gpu_fallback": "aws_route_table_association",
     "aws_security_group.database": "aws_security_group",
     "aws_vpc_security_group_ingress_rule.database": "aws_vpc_security_group_ingress_rule",
     "aws_db_subnet_group.database": "aws_db_subnet_group",
@@ -240,6 +244,15 @@ UNTAGGED_TYPES = {
     "aws_eks_access_policy_association",
 }
 AWS_SOURCE = "registry.terraform.io/hashicorp/aws"
+RUNTIME_VPC_CIDR = "10.60.0.0/16"
+RUNTIME_SUBNET_CIDRS = {
+    "aws_subnet.public[0]": "10.60.0.0/24",
+    "aws_subnet.public[1]": "10.60.1.0/24",
+    "aws_subnet.gpu": "10.60.2.0/24",
+    "aws_subnet.gpu_fallback": "10.60.3.0/24",
+    "aws_subnet.private[0]": "10.60.10.0/24",
+    "aws_subnet.private[1]": "10.60.11.0/24",
+}
 
 
 def inspect_destroy(plan_json, config):
@@ -339,6 +352,10 @@ def inspect_destroy(plan_json, config):
                 and re.fullmatch(r"vpc-[a-f0-9]{8,17}", record.get("id", "")),
                 "VPC owner/id mismatch",
             )
+            require(
+                record.get("cidr_block") == RUNTIME_VPC_CIDR,
+                "Runtime VPC CIDR mismatch",
+            )
         elif kind in [
             "aws_internet_gateway",
             "aws_subnet",
@@ -351,6 +368,16 @@ def inspect_destroy(plan_json, config):
             )
             if "owner_id" in record:
                 require(record["owner_id"] == account, "Network owner mismatch")
+            if kind == "aws_subnet":
+                expected_cidr = RUNTIME_SUBNET_CIDRS.get(address)
+                require(expected_cidr is not None, "Unexpected subnet address: " + address)
+                public = address.startswith(("aws_subnet.public[", "aws_subnet.gpu"))
+                require(
+                    value("aws_vpc.main", "cidr_block") == RUNTIME_VPC_CIDR
+                    and record.get("cidr_block") == expected_cidr
+                    and record.get("map_public_ip_on_launch") is public,
+                    "Subnet CIDR/public mapping mismatch: " + address,
+                )
             if kind == "aws_security_group":
                 require(
                     record.get("name_prefix") == name + "-db-"
@@ -358,9 +385,18 @@ def inspect_destroy(plan_json, config):
                     "Unexpected database security group name",
                 )
         elif kind == "aws_route_table_association":
-            index = int(address[-2])
+            public_match = re.fullmatch(r"aws_route_table_association\.public\[(\d+)\]", address)
+            if public_match:
+                subnet_address = f"aws_subnet.public[{public_match.group(1)}]"
+            else:
+                association_name = address.rsplit(".", 1)[-1]
+                require(
+                    association_name in {"gpu", "gpu_fallback"},
+                    "Unexpected route association address: " + address,
+                )
+                subnet_address = f"aws_subnet.{association_name}"
             require(
-                record.get("subnet_id") == value(f"aws_subnet.public[{index}]", "id")
+                record.get("subnet_id") == value(subnet_address, "id")
                 and record.get("route_table_id") == value("aws_route_table.public", "id"),
                 "Route association identity mismatch",
             )
@@ -515,14 +551,21 @@ def inspect_destroy(plan_json, config):
                     )
         elif kind == "aws_eks_node_group":
             component = address.split(".")[-1]
+            node_group_name = {"cpu": "cpu", "gpu": "gpu-flex"}.get(component)
+            expected_subnets = subnet_ids("public")
+            if component == "gpu":
+                expected_subnets += [
+                    value("aws_subnet.gpu", "id"),
+                    value("aws_subnet.gpu_fallback", "id"),
+                ]
             require(
                 record.get("cluster_name") == name
-                and record.get("node_group_name") == component
+                and record.get("node_group_name") == node_group_name
                 and record.get("node_role_arn") == f"arn:aws:iam::{account}:role/{name}-node",
                 "Node group identity mismatch",
             )
             require(
-                sorted(record.get("subnet_ids", [])) == sorted(subnet_ids("public")),
+                sorted(record.get("subnet_ids", [])) == sorted(expected_subnets),
                 "Node group subnet mismatch",
             )
         elif kind == "aws_eks_addon":
