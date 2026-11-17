@@ -89,6 +89,10 @@ run "ephemeral_runner_is_scoped_and_private" {
     error_message = "Bootstrap must pin the runner checksum and contain no registration token value."
   }
   assert {
+    condition     = strcontains(aws_instance.runner[0].user_data, "https://\\1.ubuntu.com/ubuntu") && strcontains(aws_instance.runner[0].user_data, "apt-get update")
+    error_message = "The private runner must install packages over the HTTPS-only egress rule."
+  }
+  assert {
     condition = toset(flatten([
       for statement in jsondecode(aws_iam_role_policy.runner[0].policy).Statement : try(tolist(statement.Action), [statement.Action])
     ])) == toset(["ssm:GetParameter", "ssm:DeleteParameter", "kms:Decrypt", "ec2:TerminateInstances"])

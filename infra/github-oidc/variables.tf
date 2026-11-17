@@ -13,12 +13,21 @@ variable "region" {
   default = "us-east-1"
 }
 
-variable "staging_rds_master_secret_arn" {
+variable "staging_state_bucket" {
   type        = string
-  description = "Exact Secrets Manager ARN for the staging RDS managed master password, read by the one-time GitHub deployment bootstrap job."
+  description = "Existing versioned private Terraform state bucket used by staging runtime and management roots."
   validation {
-    condition     = can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:rds!db-[A-Za-z0-9-]+$", var.staging_rds_master_secret_arn))
-    error_message = "Use the exact RDS-managed staging master secret ARN in the configured account and Region."
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.staging_state_bucket))
+    error_message = "Specify the exact existing staging Terraform state bucket."
+  }
+}
+
+variable "staging_runner_ami_id" {
+  type        = string
+  description = "Exact immutable x86_64 runner base AMI permitted by the staging management provisioner."
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]{8,17}$", var.staging_runner_ami_id))
+    error_message = "Specify the exact approved runner AMI ID."
   }
 }
 

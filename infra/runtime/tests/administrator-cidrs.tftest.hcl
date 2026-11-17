@@ -36,6 +36,35 @@ run "allow_distinct_nat_and_operator_hosts" {
   }
 }
 
+run "closed_rehearsal_can_avoid_gpu_capacity" {
+  command = plan
+  variables { gpu_desired_size = 0 }
+  assert {
+    condition     = aws_eks_node_group.gpu.scaling_config[0].desired_size == 0
+    error_message = "A closed, no-model rehearsal must be able to leave the GPU node group at zero desired nodes."
+  }
+}
+
+run "public_staging_keeps_gpu_default" {
+  command = plan
+  assert {
+    condition     = aws_eks_node_group.gpu.scaling_config[0].desired_size == 1
+    error_message = "Public vLLM staging must retain one GPU node by default."
+  }
+}
+
+run "reject_more_than_one_gpu_node" {
+  command = plan
+  variables { gpu_desired_size = 2 }
+  expect_failures = [var.gpu_desired_size]
+}
+
+run "reject_fractional_gpu_node_count" {
+  command = plan
+  variables { gpu_desired_size = 0.5 }
+  expect_failures = [var.gpu_desired_size]
+}
+
 run "reject_unrestricted_internet" {
   command = plan
   variables { administrator_cidrs = ["0.0.0.0/0"] }

@@ -1,0 +1,207 @@
+{
+  "name": "Provision staging infrastructure",
+  "permissions": {
+    "contents": "read",
+    "checks": "read"
+  },
+  "concurrency": {
+    "group": "deepresearch-aws-lifecycle",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "AWS_REGION": "us-east-1",
+    "AWS_ACCOUNT_ID": "088759500358",
+    "STATE_BUCKET": "ra-088759500358-terraform-state",
+    "SESSION_ID": "${{ inputs.session_id }}",
+    "STACK": "${{ inputs.stack }}",
+    "OPERATION": "${{ inputs.operation }}",
+    "RUNNER_MODE": "${{ inputs.runner_mode }}"
+  },
+  "jobs": {
+    "checks": {
+      "name": "Require all checks on this commit",
+      "if": "github.ref == 'refs/heads/main'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 30,
+      "steps": [
+        {
+          "name": "Wait for required checks",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "GH_REPOSITORY": "${{ github.repository }}",
+            "COMMIT_SHA": "${{ github.sha }}"
+          },
+          "run": "python3 - <<'PY'\nimport json, os, subprocess, sys, time\nrequired = {\n    \"Backend behavior\", \"Frontend behavior\", \"Frontend reproducible build\",\n    \"Container scans and SBOMs\", \"Terraform format and validate\",\n    \"Helm schema and render checks\", \"Repository checks\",\n}\ndeadline = time.monotonic() + 25 * 60\nurl = f\"repos/{os.environ['GH_REPOSITORY']}/commits/{os.environ['COMMIT_SHA']}/check-runs?per_page=100\"\nwhile time.monotonic() < deadline:\n    result = subprocess.run([\"gh\", \"api\", url], check=True, capture_output=True, text=True)\n    checks = json.loads(result.stdout)[\"check_runs\"]\n    latest = {}\n    for check in checks:\n        name = check[\"name\"]\n        if name in required:\n            stamp = check.get(\"started_at\") or check[\"created_at\"]\n            if name not in latest or stamp > latest[name][0]:\n                latest[name] = (stamp, check[\"status\"], check[\"conclusion\"])\n    failed = sorted(n for n, (_, status, conclusion) in latest.items() if status == \"completed\" and conclusion != \"success\")\n    if failed:\n        sys.exit(\"Required checks failed: \" + \", \".join(failed))\n    if required <= latest.keys() and all(latest[n][1:] == (\"completed\", \"success\") for n in required):\n        print(\"All seven required checks passed for this commit.\")\n        break\n    time.sleep(15)\nelse:\n    sys.exit(\"Timed out waiting for the required checks.\")\n"
+        }
+      ]
+    },
+    "provision": {
+      "name": "Plan or apply staging ${{ inputs.stack }}",
+      "needs": "checks",
+      "runs-on": "ubuntu-24.04",
+      "environment": "staging",
+      "timeout-minutes": 120,
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "name": "Validate inputs and exact apply confirmation",
+          "env": {
+            "CONFIRMATION": "${{ inputs.confirmation }}",
+            "PLAN_RUN_ID": "${{ inputs.plan_run_id }}",
+            "PLAN_ATTEMPT": "${{ inputs.plan_attempt }}",
+            "PLAN_VERSION_ID": "${{ inputs.plan_version_id }}",
+            "PLAN_SHA256": "${{ inputs.plan_sha256 }}",
+            "PLAN_COMMIT": "${{ inputs.plan_commit }}",
+            "RUNNER_MODE": "${{ inputs.runner_mode }}"
+          },
+          "run": "set -eu\npython3 - <<'PY'\nimport os, re, sys\nif not re.fullmatch(r\"stg-[a-z0-9-]{1,12}\", os.environ[\"SESSION_ID\"]):\n    sys.exit(\"session_id must start with stg- and fit the 16 character limit\")\nif os.environ[\"STACK\"] not in {\"management\", \"runtime\"} or os.environ[\"OPERATION\"] not in {\"plan\", \"apply\"}:\n    sys.exit(\"Unsupported stack or operation\")\nrunner_mode = os.environ[\"RUNNER_MODE\"] or \"disabled\"\nrunner_ami = os.environ[\"RUNNER_AMI_ID\"]\nif runner_mode not in {\"disabled\", \"prepare\", \"launch\"}:\n    sys.exit(\"Unsupported runner mode\")\nif runner_mode != \"disabled\" and (os.environ[\"STACK\"] != \"management\" or not re.fullmatch(r\"ami-[0-9a-f]{8,17}\", runner_ami)):\n    sys.exit(\"Runner preparation or launch requires the management stack and an exact immutable AMI ID\")\nif os.environ[\"OPERATION\"] == \"apply\":\n    if os.environ[\"CONFIRMATION\"] != \"I AUTHORIZE STAGING INFRASTRUCTURE APPLY\":\n        sys.exit(\"Applying a saved infrastructure plan requires the exact confirmation phrase\")\n    if not re.fullmatch(r\"[0-9]+\", os.environ[\"PLAN_RUN_ID\"]):\n        sys.exit(\"plan_run_id must be numeric\")\n    if not re.fullmatch(r\"[0-9]+\", os.environ[\"PLAN_ATTEMPT\"]):\n        sys.exit(\"plan_attempt must be numeric\")\n    if not re.fullmatch(r\"[0-9a-f]{64}\", os.environ[\"PLAN_SHA256\"]):\n        sys.exit(\"plan_sha256 must be a lowercase SHA256\")\n    if not os.environ[\"PLAN_VERSION_ID\"] or not re.fullmatch(r\"[0-9a-f]{40}\", os.environ[\"PLAN_COMMIT\"]):\n        sys.exit(\"plan version and full commit SHA are required\")\n    if os.environ[\"PLAN_COMMIT\"] != os.environ[\"GITHUB_SHA\"]:\n        sys.exit(\"Apply must use the same source commit that generated the plan\")\nPY\ntest \"$GITHUB_REF\" = refs/heads/main\n"
+        },
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e",
+          "with": {
+            "terraform_version": "1.10.5"
+          }
+        },
+        {
+          "name": "Enter the OIDC bootstrap role",
+          "uses": "aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df",
+          "with": {
+            "role-to-assume": "arn:aws:iam::088759500358:role/deepresearch-staging-provisioner-github-oidc",
+            "role-session-name": "staging-bootstrap-${{ github.run_id }}",
+            "aws-region": "us-east-1"
+          }
+        },
+        {
+          "name": "Assume only this session and Terraform stack",
+          "run": "set -eu\ncase \"$STACK\" in\n  management) target=arn:aws:iam::088759500358:role/deepresearch-staging-management-provisioner ;;\n  runtime) target=arn:aws:iam::088759500358:role/deepresearch-staging-runtime-provisioner ;;\nesac\ncredentials=$(aws sts assume-role --role-arn \"$target\" --role-session-name \"staging-${GITHUB_RUN_ID}\" --tags \"Key=Session,Value=$SESSION_ID\" \"Key=Stack,Value=$STACK\" --duration-seconds 3600 --output json)\nassumed_arn=$(printf '%s' \"$credentials\" | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"AssumedRoleUser\"][\"Arn\"])')\ncase \"$assumed_arn\" in \"$target\"/*) ;; *) echo \"Assumed identity does not match the selected staging stack.\" >&2; exit 1 ;; esac\nprintf '%s' \"$credentials\" | python3 -c 'import json,os,sys; c=json.load(sys.stdin)[\"Credentials\"]; f=open(os.environ[\"GITHUB_ENV\"],\"a\"); [f.write(f\"{k}={c[v]}\\n\") for k,v in ((\"AWS_ACCESS_KEY_ID\",\"AccessKeyId\"),(\"AWS_SECRET_ACCESS_KEY\",\"SecretAccessKey\"),(\"AWS_SESSION_TOKEN\",\"SessionToken\"))]; f.close(); [print(f\"::add-mask::{c[v]}\") for v in (\"AccessKeyId\",\"SecretAccessKey\",\"SessionToken\")]'\nunset credentials\n"
+        },
+        {
+          "name": "Verify session-tagged stack role",
+          "env": {
+            "AWS_ACCOUNT_ID": "088759500358"
+          },
+          "run": "set -eu\ntest \"$(aws sts get-caller-identity --query Account --output text)\" = \"$AWS_ACCOUNT_ID\"\ncase \"$(aws sts get-caller-identity --query Arn --output text)\" in\n  arn:aws:sts::088759500358:assumed-role/deepresearch-staging-${STACK}-provisioner/*) ;;\n  *) echo \"The active AWS session is not the expected staging $STACK provisioner role.\" >&2; exit 1 ;;\nesac\n"
+        },
+        {
+          "name": "Verify private versioned state bucket",
+          "run": "set -eu\ntest \"$(aws s3api get-bucket-versioning --bucket \"$STATE_BUCKET\" --query Status --output text)\" = Enabled\ntest \"$(aws s3api get-public-access-block --bucket \"$STATE_BUCKET\" --query 'PublicAccessBlockConfiguration.BlockPublicAcls && PublicAccessBlockConfiguration.BlockPublicPolicy && PublicAccessBlockConfiguration.IgnorePublicAcls && PublicAccessBlockConfiguration.RestrictPublicBuckets' --output text)\" = True\n"
+        },
+        {
+          "name": "Acquire and renew the shared staging lifecycle lease",
+          "run": "set -eu\nowner_file=\"$RUNNER_TEMP/staging-lifecycle-owner\"\npython3 scripts/staging_lifecycle_lease.py acquire --session-id \"$SESSION_ID\" --owner-file \"$owner_file\"\nnohup python3 scripts/staging_lifecycle_lease.py heartbeat --session-id \"$SESSION_ID\" --owner-file \"$owner_file\" --interval 30 </dev/null >/dev/null 2>&1 &\necho \"$!\" > \"$RUNNER_TEMP/staging-lifecycle-heartbeat-pid\"\necho \"STAGING_LIFECYCLE_OWNER_FILE=$owner_file\" >> \"$GITHUB_ENV\"\n"
+        },
+        {
+          "name": "Create private plan or apply exact version",
+          "env": {
+            "PLAN_RUN_ID": "${{ inputs.plan_run_id }}",
+            "PLAN_ATTEMPT": "${{ inputs.plan_attempt }}",
+            "PLAN_VERSION_ID": "${{ inputs.plan_version_id }}",
+            "PLAN_SHA256": "${{ inputs.plan_sha256 }}",
+            "PLAN_COMMIT": "${{ inputs.plan_commit }}",
+            "GPU_DESIRED_SIZE": "${{ inputs.gpu_desired_size }}",
+            "RUNNER_MODE": "${{ inputs.runner_mode }}"
+          },
+          "run": "set -euo pipefail\npython3 scripts/staging_lifecycle_lease.py assert --session-id \"$SESSION_ID\" --owner-file \"$STAGING_LIFECYCLE_OWNER_FILE\"\ntmp=\"$RUNNER_TEMP/staging-tf\"\nmkdir -m 700 \"$tmp\"\nif [ \"$OPERATION\" = plan ]; then\n  plan_run_id=$GITHUB_RUN_ID\n  plan_attempt=$GITHUB_RUN_ATTEMPT\nelse\n  plan_run_id=$PLAN_RUN_ID\n  plan_attempt=$PLAN_ATTEMPT\nfi\nkey=\"deepresearch/staging/plans/$SESSION_ID/$STACK/$GITHUB_SHA/$plan_run_id-$plan_attempt.tfplan\"\nstate_args=(-backend-config=\"bucket=$STATE_BUCKET\" -backend-config=\"key=deepresearch/staging/$STACK.tfstate\" -backend-config=\"region=$AWS_REGION\" -backend-config=\"encrypt=true\" -backend-config=\"use_lockfile=true\")\nif [ \"$STACK\" = management ]; then\n  python3 - \"$tmp/terraform.tfvars.json\" <<'PY'\nimport json,os,sys\nmode=os.environ[\"RUNNER_MODE\"] or \"disabled\"\nsession=os.environ[\"SESSION_ID\"]\nvalue={\"account_id\":\"088759500358\",\"region\":\"us-east-1\",\"environment\":\"staging\",\"session_id\":session,\"availability_zone\":\"us-east-1a\",\"enable_github_runner\":mode in {\"prepare\",\"launch\"},\"launch_github_runner\":mode == \"launch\"}\nif mode != \"disabled\":\n    value.update({\"github_runner_ami_id\":os.environ[\"RUNNER_AMI_ID\"],\"github_repository\":\"sagar-spkt/DeepResearchAgent\"})\nif mode == \"launch\":\n    value[\"github_runner_registration_parameter\"]=f\"/deepresearch/runner/{session}/registration\"\nwith open(sys.argv[1],\"w\") as f: json.dump(value,f)\nPY\n  if [ \"$RUNNER_MODE\" = launch ]; then\n    test \"$(aws ssm get-parameter --name \"/deepresearch/runner/$SESSION_ID/registration\" --query Parameter.Type --output text)\" = SecureString\n  fi\nelse\n  terraform -chdir=infra/management init -reconfigure -input=false \"${state_args[@]}\"\n  nat_ip=$(terraform -chdir=infra/management output -raw nat_public_ip)\n  terraform -chdir=infra/foundation init -reconfigure -input=false -backend-config=\"bucket=$STATE_BUCKET\" -backend-config=\"key=deepresearch/staging/foundation.tfstate\" -backend-config=\"region=$AWS_REGION\" -backend-config=\"encrypt=true\" -backend-config=\"use_lockfile=true\"\n  terraform -chdir=infra/foundation output -json > \"$tmp/foundation-output.json\"\n  python3 - \"$tmp/terraform.tfvars.json\" \"$tmp/foundation-output.json\" \"$nat_ip\" \"$GPU_DESIRED_SIZE\" \"$SESSION_ID\" <<'PY'\nimport json,sys\npath,out,nat,gpu,session=sys.argv[1:]\nwith open(out) as f: foundation=json.load(f)[\"foundation\"][\"value\"]\nvalue={\"account_id\":\"088759500358\",\"region\":\"us-east-1\",\"environment\":\"staging\",\"session_id\":session,\"foundation\":foundation,\"availability_zones\":[\"us-east-1a\",\"us-east-1b\"],\"gpu_availability_zone\":\"us-east-1c\",\"gpu_fallback_availability_zone\":\"us-east-1d\",\"gpu_desired_size\":int(gpu),\"administrator_cidrs\":[nat+\"/32\"],\"operator_principal_arn\":\"arn:aws:iam::088759500358:user/research-operator\",\"kubernetes_version\":\"1.37\"}\nwith open(path,\"w\") as f: json.dump(value,f)\nPY\nfi\nif [ \"$OPERATION\" = plan ]; then\n  terraform -chdir=\"infra/$STACK\" init -reconfigure -input=false \"${state_args[@]}\"\n  terraform -chdir=\"infra/$STACK\" plan -input=false -no-color -var-file=\"$tmp/terraform.tfvars.json\" -out=\"$tmp/staging.tfplan\" > \"$tmp/plan.log\"\n  plan_sha=$(sha256sum \"$tmp/staging.tfplan\" | awk '{print $1}')\n  terraform -chdir=\"infra/$STACK\" show -json \"$tmp/staging.tfplan\" > \"$tmp/plan.json\"\n  python3 - \"$tmp/plan.json\" \"$GITHUB_STEP_SUMMARY\" <<'PY'\nimport json,sys\nwith open(sys.argv[1]) as f: plan=json.load(f)\nchanges=[item for item in plan.get(\"resource_changes\",[]) if item[\"change\"][\"actions\"] != [\"no-op\"]]\nwith open(sys.argv[2],\"a\") as out:\n    out.write(\"\\n### Redacted resource action summary\\n\\n\")\n    if not changes: out.write(\"No managed resource changes.\\n\")\n    for item in changes:\n        out.write(f\"- `{item['address']}`: `{', '.join(item['change']['actions'])}`\\n\")\nPY\n  runner_ami_metadata=${RUNNER_AMI_ID:-none}\n  created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n  result=$(aws s3api put-object --bucket \"$STATE_BUCKET\" --key \"$key\" --body \"$tmp/staging.tfplan\" --server-side-encryption AES256 --content-type application/octet-stream --metadata \"stack=$STACK,session-id=$SESSION_ID,commit-sha=$GITHUB_SHA,run-id=$GITHUB_RUN_ID,run-attempt=$GITHUB_RUN_ATTEMPT,sha256=$plan_sha,created-at=$created_at,runner-mode=$RUNNER_MODE,runner-ami-id=$runner_ami_metadata,gpu-desired-size=$GPU_DESIRED_SIZE\")\n  version=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])[\"VersionId\"])' \"$result\")\n  {\n    echo \"## Private staging Terraform plan\"\n    echo\n    echo \"Stack: \\`$STACK\\`; session: \\`$SESSION_ID\\`; commit: \\`$GITHUB_SHA\\`; runner mode: \\`$RUNNER_MODE\\`; runner AMI: \\`$runner_ami_metadata\\`; GPU desired size: \\`$GPU_DESIRED_SIZE\\`.\"\n    echo \"The plan is stored only in the private, versioned state bucket. It is not uploaded as a GitHub artifact or printed to logs.\"\n    echo\n    echo \"Next apply inputs: run \\`$GITHUB_RUN_ID\\`, attempt \\`$GITHUB_RUN_ATTEMPT\\`, version \\`$version\\`, SHA256 \\`$plan_sha\\`, commit \\`$GITHUB_SHA\\`.\"\n  } >> \"$GITHUB_STEP_SUMMARY\"\nelse\n  test \"$PLAN_COMMIT\" = \"$GITHUB_SHA\"\n  head=$(aws s3api head-object --bucket \"$STATE_BUCKET\" --key \"$key\" --version-id \"$PLAN_VERSION_ID\")\n  runner_ami_metadata=${RUNNER_AMI_ID:-none}\n  python3 - \"$head\" \"$STACK\" \"$SESSION_ID\" \"$PLAN_RUN_ID\" \"$PLAN_ATTEMPT\" \"$PLAN_SHA256\" \"$PLAN_COMMIT\" \"$RUNNER_MODE\" \"$runner_ami_metadata\" \"$GPU_DESIRED_SIZE\" <<'PY'\nimport json,sys\nm=json.loads(sys.argv[1])[\"Metadata\"]\nexpected={\"stack\":sys.argv[2],\"session-id\":sys.argv[3],\"run-id\":sys.argv[4],\"run-attempt\":sys.argv[5],\"sha256\":sys.argv[6],\"commit-sha\":sys.argv[7],\"runner-mode\":sys.argv[8],\"runner-ami-id\":sys.argv[9],\"gpu-desired-size\":sys.argv[10]}\nif any(m.get(k)!=v for k,v in expected.items()): raise SystemExit(\"Saved plan metadata does not match these apply inputs\")\nfrom datetime import datetime,timezone\nmade=datetime.strptime(m[\"created-at\"],\"%Y-%m-%dT%H:%M:%SZ\").replace(tzinfo=timezone.utc)\nif (datetime.now(timezone.utc)-made).total_seconds()>3600: raise SystemExit(\"Saved plan is older than one hour\")\nPY\n  aws s3api get-object --bucket \"$STATE_BUCKET\" --key \"$key\" --version-id \"$PLAN_VERSION_ID\" \"$tmp/staging.tfplan\" >/dev/null\n  actual_sha=$(sha256sum \"$tmp/staging.tfplan\" | awk '{print $1}')\n  test \"$actual_sha\" = \"$PLAN_SHA256\"\n  terraform -chdir=\"infra/$STACK\" init -reconfigure -input=false \"${state_args[@]}\"\n  python3 scripts/staging_lifecycle_lease.py assert --session-id \"$SESSION_ID\" --owner-file \"$STAGING_LIFECYCLE_OWNER_FILE\"\n  terraform -chdir=\"infra/$STACK\" apply -input=false -no-color \"$tmp/staging.tfplan\"\n  echo \"Applied the exact private plan version for $STACK in staging session $SESSION_ID.\" >> \"$GITHUB_STEP_SUMMARY\"\n  if [ \"$STACK\" = management ] && [ \"$RUNNER_MODE\" = prepare ]; then\n    runner_key=$(terraform -chdir=infra/management output -raw github_runner_token_kms_key_arn)\n    echo \"Runner token KMS key ARN: $runner_key\" >> \"$GITHUB_STEP_SUMMARY\"\n  elif [ \"$STACK\" = management ] && [ \"$RUNNER_MODE\" = launch ]; then\n    instance_id=$(terraform -chdir=infra/management output -raw github_runner_instance_id)\n    aws ec2 wait instance-status-ok --instance-ids \"$instance_id\"\n    echo \"The one-job runner instance passed EC2 status checks: $instance_id. Verify its GitHub runner registration before dispatching deploy.\" >> \"$GITHUB_STEP_SUMMARY\"\n  fi\nfi\n"
+        },
+        {
+          "name": "Stop lease heartbeat and remove temporary plans",
+          "if": "always()",
+          "run": "if [ -f \"$RUNNER_TEMP/staging-lifecycle-heartbeat-pid\" ]; then kill \"$(cat \"$RUNNER_TEMP/staging-lifecycle-heartbeat-pid\")\" 2>/dev/null || true; fi\nif [ -f \"$RUNNER_TEMP/staging-lifecycle-owner\" ]; then python3 scripts/staging_lifecycle_lease.py release --session-id \"$SESSION_ID\" --owner-file \"$RUNNER_TEMP/staging-lifecycle-owner\" || true; fi\nrm -rf \"$RUNNER_TEMP/staging-tf\" \"$RUNNER_TEMP/staging-lifecycle-owner\" \"$RUNNER_TEMP/staging-lifecycle-owner.heartbeat\" \"$RUNNER_TEMP/staging-lifecycle-owner.lost\" \"$RUNNER_TEMP/staging-lifecycle-heartbeat-pid\""
+        }
+      ],
+      "env": {
+        "RUNNER_AMI_ID": "${{ vars.STAGING_RUNNER_AMI_ID }}"
+      }
+    }
+  },
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "operation": {
+          "description": "Create a private plan, or apply an exact saved plan version",
+          "type": "choice",
+          "options": [
+            "plan",
+            "apply"
+          ],
+          "required": true,
+          "default": "plan"
+        },
+        "stack": {
+          "description": "Terraform root to provision",
+          "type": "choice",
+          "options": [
+            "management",
+            "runtime"
+          ],
+          "required": true
+        },
+        "session_id": {
+          "description": "Active staging admission ID (stg- prefix, up to 16 characters)",
+          "type": "string",
+          "required": true
+        },
+        "gpu_desired_size": {
+          "description": "Set 0 for closed recovery; set 1 only for an authorized model session",
+          "type": "choice",
+          "options": [
+            "0",
+            "1"
+          ],
+          "required": true,
+          "default": "0"
+        },
+        "confirmation": {
+          "description": "For apply, enter I AUTHORIZE STAGING INFRASTRUCTURE APPLY",
+          "type": "string",
+          "required": false
+        },
+        "plan_run_id": {
+          "description": "Run ID returned by the plan operation",
+          "type": "string",
+          "required": false
+        },
+        "plan_attempt": {
+          "description": "Attempt number returned by the plan operation",
+          "type": "string",
+          "required": false
+        },
+        "plan_version_id": {
+          "description": "S3 VersionId returned by the plan operation",
+          "type": "string",
+          "required": false
+        },
+        "plan_sha256": {
+          "description": "SHA256 returned by the plan operation",
+          "type": "string",
+          "required": false
+        },
+        "plan_commit": {
+          "description": "Commit SHA returned by the plan operation",
+          "type": "string",
+          "required": false
+        },
+        "runner_mode": {
+          "description": "Management only: disabled, prepare the token KMS key, or launch the one-job in-VPC runner",
+          "type": "choice",
+          "options": [
+            "disabled",
+            "prepare",
+            "launch"
+          ],
+          "required": true,
+          "default": "disabled"
+        }
+      }
+    }
+  }
+}

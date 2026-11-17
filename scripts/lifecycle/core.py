@@ -918,6 +918,36 @@ def workspace_path(workspace, relative):
     return target
 
 
+def validate_runtime_backend(backend_bytes, environment, approved_bucket):
+    """Validate the exact backend configuration used before an expiry plan is saved."""
+    try:
+        text = backend_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refused("Runtime backend config must be UTF-8 text") from exc
+    actual = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.fullmatch(r'([a-z_]+)\s*=\s*(?:"([^"]*)"|(true|false))', stripped)
+        if not match:
+            raise Refused("Runtime backend config contains unsupported or sensitive syntax")
+        name, string_value, bool_value = match.groups()
+        if name in actual:
+            raise Refused("Runtime backend config contains duplicate settings")
+        actual[name] = string_value if string_value is not None else bool_value == "true"
+    expected = {
+        "bucket": approved_bucket,
+        "key": f"deepresearch/{environment}/runtime.tfstate",
+        "region": "us-east-1",
+        "encrypt": True,
+        "use_lockfile": True,
+    }
+    if actual != expected:
+        raise Refused("Runtime backend config contains unsupported settings or mismatches the approved state bucket, key, encryption and lock settings")
+    return actual
+
+
 def prepare_expiry(
     config,
     workspace,
@@ -925,11 +955,21 @@ def prepare_expiry(
     saved_plan="artifacts/expiry.tfplan",
     runner=command,
     admission_start=None,
+    runtime_state_bucket=None,
+    runtime_backend_file=None,
 ):
     """Bind the reviewed destroy intent to the original admitted session clock."""
     validate_config(config)
     if len(config["session_id"]) > 16:
         raise Refused("Expiry session ID must be at most 16 characters")
+    if not isinstance(runtime_state_bucket, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", runtime_state_bucket
+    ):
+        raise Refused("A valid retained runtime state bucket is required for expiry approval")
+    if not runtime_backend_file:
+        raise Refused("Runtime backend config is required for expiry approval")
+    if runtime_backend_file != "artifacts/runtime.backend.hcl":
+        raise Refused("Expiry runtime backend must use the reviewed fixed archive path")
     start = (
         datetime.fromtimestamp(admission_start, timezone.utc)
         if admission_start is not None
@@ -941,6 +981,28 @@ def prepare_expiry(
     saved = workspace_path(root, saved_plan)
     saved.parent.mkdir(parents=True, exist_ok=True)
     vars_path = workspace_path(root, var_file)
+    backend_path = workspace_path(root, runtime_backend_file)
+    backend_bytes = backend_path.read_bytes()
+    backend_values = validate_runtime_backend(
+        backend_bytes, config["environment"], runtime_state_bucket
+    )
+    backend_hash = hashlib.sha256(backend_bytes).hexdigest()
+    runner(
+        [
+            "terraform",
+            f"-chdir={root / 'infra/runtime'}",
+            "init",
+            "-reconfigure",
+            *[
+                f"-backend-config={key}={str(value).lower() if isinstance(value, bool) else value}"
+                for key, value in backend_values.items()
+            ],
+            "-lockfile=readonly",
+            "-input=false",
+        ]
+    )
+    if hashlib.sha256(backend_path.read_bytes()).hexdigest() != backend_hash:
+        raise Refused("Runtime backend config changed during Terraform initialization")
     runner(
         [
             "terraform",
@@ -953,6 +1015,8 @@ def prepare_expiry(
             "-lock-timeout=60s",
         ]
     )
+    if hashlib.sha256(backend_path.read_bytes()).hexdigest() != backend_hash:
+        raise Refused("Runtime backend config changed during destroy planning")
     raw = json.loads(
         runner(["terraform", f"-chdir={root / 'infra/runtime'}", "show", "-json", str(saved)])
     )
@@ -969,6 +1033,10 @@ def prepare_expiry(
         "not_before": (start + timedelta(hours=4)).isoformat(),
         "expires_at": (start + timedelta(hours=6)).isoformat(),
         "backup_plan": nested,
+        "runtime_state_bucket": runtime_state_bucket,
+        "runtime_state_key": f"deepresearch/{config['environment']}/runtime.tfstate",
+        "runtime_backend_file": runtime_backend_file,
+        "runtime_backend_sha256": backend_hash,
         "saved_plan": saved_plan,
         "saved_plan_sha256": file_hash(saved),
         "deletions": inspect_destroy(raw, config),
@@ -991,6 +1059,15 @@ def execute_expiry(intent, approved_hash, workspace, adapter, runner=command, in
     if intent["backup_plan"]["config"] != intent["config"]:
         raise Refused("Nested backup scope mismatch")
     root = Path(workspace).resolve()
+    backend_path = workspace_path(root, intent["runtime_backend_file"])
+    backend_bytes = backend_path.read_bytes()
+    if hashlib.sha256(backend_bytes).hexdigest() != intent["runtime_backend_sha256"]:
+        raise Refused("Approved runtime backend file changed")
+    validate_runtime_backend(
+        backend_bytes,
+        intent["config"]["environment"],
+        intent["runtime_state_bucket"],
+    )
     saved = workspace_path(root, intent["saved_plan"])
     receipt_path = workspace_path(root, intent["receipt"])
     if receipt_path.exists():

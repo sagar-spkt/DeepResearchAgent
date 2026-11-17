@@ -21,6 +21,16 @@ variable "gpu_fallback_availability_zone" {
   description = "Second Availability Zone for GPU capacity selection when the primary zone has no On-Demand capacity."
 }
 
+variable "gpu_desired_size" {
+  type        = number
+  default     = 1
+  description = "Desired GPU node count. Set to zero for closed, no-model recovery rehearsals; one is required for public vLLM staging."
+  validation {
+    condition     = contains([0, 1], var.gpu_desired_size)
+    error_message = "The staging runtime supports at most one GPU node; use zero for closed rehearsals or one for vLLM."
+  }
+}
+
 variable "administrator_cidrs" {
   type        = list(string)
   nullable    = false

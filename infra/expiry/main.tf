@@ -87,7 +87,7 @@ resource "aws_codebuild_project" "executor" {
     location = "${var.source_bucket}/${var.source_key}"
     buildspec = jsonencode({ version = 0.2, phases = {
       pre_build = { commands = [
-        "terraform -chdir=infra/runtime init -backend-config=artifacts/runtime.backend.hcl -lockfile=readonly",
+        "terraform -chdir=infra/runtime init -backend-config=../../artifacts/runtime.backend.hcl -lockfile=readonly",
         "aws eks update-kubeconfig --name \"$CLUSTER_NAME\" --region \"$AWS_REGION\""
       ] },
       build = { commands = ["python3 scripts/platform_lifecycle.py expiry --plan artifacts/expiry-intent.json --approved-plan-hash \"$APPROVED_INTENT_SHA\" --workspace \"$CODEBUILD_SRC_DIR\" --execute --output artifacts/expiry-result.json"] }

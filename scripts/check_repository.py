@@ -84,8 +84,12 @@ def check(root=ROOT):
                     for job_name, job in data.get("jobs", {}).items():
                         job_permissions = job.get("permissions")
                         if job_permissions is not None and not (
-                            relative == ".github/workflows/deploy.yml"
-                            and job_name == "deploy"
+                            (
+                                relative == ".github/workflows/deploy.yml"
+                                and job_name == "deploy"
+                                or relative == ".github/workflows/provision-staging.yml"
+                                and job_name == "provision"
+                            )
                             and job_permissions == {"contents": "read", "id-token": "write"}
                         ):
                             errors.append(

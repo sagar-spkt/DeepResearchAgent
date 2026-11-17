@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import sys
@@ -39,6 +40,20 @@ CONFIG = {
     "github_runner_enabled": False,
     "operator_principal_arn": "arn:aws:iam::123456789012:user/research-operator",
 }
+RUNTIME_STATE_BUCKET = "deepresearch-terraform-state-123456789012-us-east-1"
+
+
+def runtime_backend_file(root, bucket=RUNTIME_STATE_BUCKET):
+    path = root / "artifacts/runtime.backend.hcl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'bucket = "{bucket}"\n'
+        'key = "deepresearch/staging/runtime.tfstate"\n'
+        'region = "us-east-1"\n'
+        "encrypt = true\n"
+        "use_lockfile = true\n"
+    )
+    return "artifacts/runtime.backend.hcl"
 
 
 class FakeAdapter:
@@ -440,7 +455,11 @@ class CoreTests(unittest.TestCase):
                     return json.dumps(tfplan())
                 return ""
 
-            intent = prepare_expiry(CONFIG, root, "artifacts/vars.json", runner=runner)
+            intent = prepare_expiry(
+                CONFIG, root, "artifacts/vars.json", runner=runner,
+                runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                runtime_backend_file=runtime_backend_file(root),
+            )
             adapter = FakeAdapter()
             with self.assertRaisesRegex(Refused, "not reached"):
                 execute_expiry(intent, digest(intent), root, adapter, runner)
@@ -459,7 +478,11 @@ class CoreTests(unittest.TestCase):
                     return json.dumps(tfplan())
                 return ""
 
-            intent = prepare_expiry(CONFIG, root, "artifacts/vars.json", runner=runner)
+            intent = prepare_expiry(
+                CONFIG, root, "artifacts/vars.json", runner=runner,
+                runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                runtime_backend_file=runtime_backend_file(root),
+            )
             intent["not_before"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
             adapter = FakeAdapter()
             result = execute_expiry(intent, digest(intent), root, adapter, runner)
@@ -1168,7 +1191,118 @@ class ExpiryApprovalWindowTests(unittest.TestCase):
                 saved.write_bytes(b"approved")
             return json.dumps(tfplan()) if "show" in argv else ""
 
-        return prepare_expiry(CONFIG, root, "artifacts/vars.json", runner=runner), runner
+        return (
+            prepare_expiry(
+                CONFIG, root, "artifacts/vars.json", runner=runner,
+                runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                runtime_backend_file=runtime_backend_file(root),
+            ),
+            runner,
+        )
+
+    def test_expiry_intent_hash_binds_runtime_state_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            intent, _ = self.prepare(root)
+            self.assertEqual(RUNTIME_STATE_BUCKET, intent["runtime_state_bucket"])
+            self.assertEqual("deepresearch/staging/runtime.tfstate", intent["runtime_state_key"])
+            self.assertEqual("artifacts/runtime.backend.hcl", intent["runtime_backend_file"])
+            self.assertEqual(
+                hashlib.sha256((root / intent["runtime_backend_file"]).read_bytes()).hexdigest(),
+                intent["runtime_backend_sha256"],
+            )
+            changed = dict(intent, runtime_state_bucket="different-state-bucket")
+            self.assertNotEqual(digest(intent), digest(changed))
+
+    def test_expiry_refuses_missing_state_bucket_before_planning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+            with self.assertRaisesRegex(Refused, "runtime state bucket"):
+                prepare_expiry(
+                    CONFIG,
+                    root,
+                    "artifacts/vars.json",
+                    runner=lambda *args, **kwargs: calls.append(args),
+                )
+            self.assertEqual([], calls)
+
+    def test_expiry_rejects_backend_mismatch_before_terraform(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = runtime_backend_file(root, bucket="another-state-bucket")
+            calls = []
+            with self.assertRaisesRegex(Refused, "mismatches the approved state bucket"):
+                prepare_expiry(
+                    CONFIG,
+                    root,
+                    "artifacts/vars.json",
+                    runner=lambda *args, **kwargs: calls.append(args),
+                    runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                    runtime_backend_file=backend,
+                )
+            self.assertEqual([], calls)
+
+    def test_expiry_refuses_backend_changed_after_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            intent, runner = self.prepare(root)
+            backend_path = root / intent["runtime_backend_file"]
+            backend_path.write_text(backend_path.read_text() + "# changed\n")
+            adapter = FakeAdapter()
+            intent["not_before"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+            with self.assertRaisesRegex(Refused, "backend file changed"):
+                execute_expiry(intent, digest(intent), root, adapter, runner)
+            self.assertEqual([], adapter.calls)
+
+    def test_expiry_backend_rejects_unapproved_credential_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = runtime_backend_file(root)
+            backend_path = root / backend
+            backend_path.write_text(backend_path.read_text() + 'access_key = "synthetic"\n')
+            calls = []
+            with self.assertRaisesRegex(Refused, "unsupported settings"):
+                prepare_expiry(
+                    CONFIG,
+                    root,
+                    "artifacts/vars.json",
+                    runner=lambda *args, **kwargs: calls.append(args),
+                    runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                    runtime_backend_file=backend,
+                )
+            self.assertEqual([], calls)
+
+    def test_expiry_initializes_from_backend_snapshot_and_refuses_changed_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "infra/runtime").mkdir(parents=True)
+            backend = runtime_backend_file(root)
+            backend_path = root / backend
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append(argv)
+                if "init" in argv:
+                    backend_path.write_text(backend_path.read_text() + "# changed during init\n")
+                return ""
+
+            with self.assertRaisesRegex(Refused, "changed during Terraform initialization"):
+                prepare_expiry(
+                    CONFIG,
+                    root,
+                    "artifacts/vars.json",
+                    runner=runner,
+                    runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                    runtime_backend_file=backend,
+                )
+            self.assertEqual(1, len(calls))
+            self.assertIn(
+                f"-backend-config=bucket={RUNTIME_STATE_BUCKET}",
+                calls[0],
+            )
+            self.assertIn("-backend-config=key=deepresearch/staging/runtime.tfstate", calls[0])
+            self.assertNotIn("plan", calls[0])
 
     def test_expired_parent_intent_after_backup_prevents_destroy(self):
         from unittest.mock import patch
@@ -1234,7 +1368,9 @@ class AdmissionTimerTests(unittest.TestCase):
                 return json.dumps(tfplan()) if "show" in argv else ""
 
             intent = prepare_expiry(
-                CONFIG, root, "artifacts/vars.json", runner=runner, admission_start=admitted
+                CONFIG, root, "artifacts/vars.json", runner=runner, admission_start=admitted,
+                runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                runtime_backend_file=runtime_backend_file(root),
             )
             self.assertEqual(
                 admitted + 14400, int(datetime.fromisoformat(intent["not_before"]).timestamp())
@@ -1250,6 +1386,8 @@ class AdmissionTimerTests(unittest.TestCase):
                     "artifacts/vars.json",
                     runner=lambda *a, **k: calls.append(a),
                     admission_start=admitted - 86400,
+                    runtime_state_bucket=RUNTIME_STATE_BUCKET,
+                    runtime_backend_file=runtime_backend_file(root),
                 )
             self.assertEqual([], calls)
 

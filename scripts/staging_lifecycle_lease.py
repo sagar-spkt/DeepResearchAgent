@@ -155,6 +155,27 @@ def renew(owner, session_id, now=None, runner=subprocess.run):
     )
 
 
+def release(owner, session_id, runner=subprocess.run):
+    """Release only the lock still owned by this workflow and session."""
+    validate_session_id(session_id)
+    request(
+        [
+            "update-item",
+            "--table-name",
+            TABLE,
+            "--key",
+            json.dumps({"key": {"S": "lifecycle-lock"}}),
+            "--update-expression",
+            "REMOVE owner_id, expires_at, session_id",
+            "--condition-expression",
+            "owner_id = :owner AND session_id = :session",
+            "--expression-attribute-values",
+            json.dumps({":owner": {"S": owner}, ":session": {"S": session_id}}),
+        ],
+        runner,
+    )
+
+
 def read_owner(path):
     try:
         value = Path(path).read_text().strip()
@@ -174,7 +195,7 @@ def write_heartbeat_status(owner_file, lost=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["acquire", "assert", "heartbeat"])
+    parser.add_argument("operation", choices=["acquire", "assert", "heartbeat", "release"])
     parser.add_argument("--owner-file", type=Path, required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--interval", type=int, default=30)
@@ -190,6 +211,8 @@ def main():
             owner = read_owner(args.owner_file)
             if args.operation == "assert":
                 assert_owner(owner, args.session_id)
+            elif args.operation == "release":
+                release(owner, args.session_id)
             else:
                 if not 10 <= args.interval <= 60:
                     raise LeaseError("Heartbeat interval must be 10–60 seconds")

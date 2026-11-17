@@ -2,7 +2,7 @@ import json
 import subprocess
 import unittest
 
-from scripts.staging_lifecycle_lease import LeaseError, acquire, assert_owner, renew
+from scripts.staging_lifecycle_lease import LeaseError, acquire, assert_owner, release, renew
 
 
 class StagingLifecycleLeaseTests(unittest.TestCase):
@@ -122,6 +122,22 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
         self.assertIn("owner_id = :owner", condition)
         self.assertIn("session_id = :session", condition)
         self.assertIn("expires_at > :now", condition)
+
+    def test_release_is_conditional_on_exact_owner_and_session(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+        release("workflow-owner", "stg-20261116", runner=runner)
+        update = calls[0]
+        self.assertIn("update-item", update)
+        self.assertEqual("REMOVE owner_id, expires_at, session_id", update[update.index("--update-expression") + 1])
+        self.assertEqual("owner_id = :owner AND session_id = :session", update[update.index("--condition-expression") + 1])
+        values = json.loads(update[update.index("--expression-attribute-values") + 1])
+        self.assertEqual("workflow-owner", values[":owner"]["S"])
+        self.assertEqual("stg-20261116", values[":session"]["S"])
 
     def test_session_id_is_validated_before_any_cloud_call(self):
         calls = []

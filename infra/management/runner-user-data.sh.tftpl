@@ -50,6 +50,24 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now actions-runner-watchdog.timer
 
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  sed -i -E 's#http://(archive|security)\.ubuntu\.com/ubuntu#https://\1.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+  if grep -Eq '^URIs: http://' /etc/apt/sources.list.d/ubuntu.sources; then
+    echo "Ubuntu package sources must use HTTPS from the private runner subnet." >&2
+    exit 1
+  fi
+  apt-get update
+  apt-get install -y --no-install-recommends awscli ca-certificates curl docker.io docker-buildx git python3 tar
+  systemctl enable --now docker
+  getent group docker >/dev/null || groupadd docker
+  id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
+  usermod -aG docker runner
+else
+  echo "Runner base image must use Ubuntu with apt-get." >&2
+  exit 1
+fi
+
 for command in curl sha256sum tar aws systemctl; do command -v "$command" >/dev/null; done
 for command in docker git python3; do command -v "$command" >/dev/null; done
 id runner >/dev/null 2>&1

@@ -5,9 +5,10 @@ mock_provider "aws" {
 }
 
 variables {
-  account_id                    = "123456789012"
-  region                        = "us-east-1"
-  staging_rds_master_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds!db-12345678-1234-1234-1234-123456789012"
+  account_id            = "123456789012"
+  region                = "us-east-1"
+  staging_state_bucket  = "deepresearch-state-123456789012-us-east-1"
+  staging_runner_ami_id = "ami-0123456789abcdef0"
 }
 
 override_resource {

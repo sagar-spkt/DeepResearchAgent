@@ -91,6 +91,8 @@ def main():
     p.add_argument("--runtime-dir", type=Path)
     p.add_argument("--var-file", type=Path)
     p.add_argument("--saved-plan", type=Path)
+    p.add_argument("--runtime-state-bucket")
+    p.add_argument("--runtime-backend", type=Path)
     p.add_argument("--bootstrap-cleanup-plan", type=Path)
     p.add_argument("--environment", choices=["staging", "production"])
     p.add_argument("--execute", action="store_true")
@@ -248,8 +250,8 @@ def main():
                     "monthly_limit_seconds": 72000,
                 }
             elif args.operation == "plan-expiry":
-                if config is None or not args.var_file:
-                    raise Refused("config and var-file required")
+                if config is None or not args.var_file or not args.runtime_state_bucket or not args.runtime_backend:
+                    raise Refused("config, var-file, runtime-state-bucket, and runtime-backend required")
                 aws = adapter(config)
                 admission = ControlStore(aws.clients["dynamodb"]).assert_admitted(config)
                 result = prepare_expiry(
@@ -258,6 +260,8 @@ def main():
                     str(args.var_file),
                     str(args.saved_plan or "artifacts/expiry.tfplan"),
                     admission_start=int(admission["started_at"]["N"]),
+                    runtime_state_bucket=args.runtime_state_bucket,
+                    runtime_backend_file=str(args.runtime_backend),
                 )
             elif args.operation == "plan-backup":
                 if config is None:

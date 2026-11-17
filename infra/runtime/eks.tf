@@ -171,7 +171,7 @@ resource "aws_eks_node_group" "gpu" {
   scaling_config {
     min_size     = 0
     max_size     = 1
-    desired_size = 1
+    desired_size = var.gpu_desired_size
   }
 
   labels = {

@@ -16,6 +16,8 @@ Set region/AZs, operator CIDR ranges, Kubernetes version in standard support, a 
 
 Create application database credentials and vLLM key in Secrets Manager. Bootstrap separate database roles/databases with database/bootstrap.sql from an in-VPC job. Run backend migrations before opening ingress. App SQL cannot use the RDS master identity. RDS extension availability must be verified on the selected engine version.
 
+For a closed, no-model recovery rehearsal, set runtime variable `gpu_desired_size = 0`; this leaves the GPU node group at zero desired nodes while preserving the default of one GPU node for public vLLM staging. The variable accepts only zero or one. This reduces the closed rehearsal's hourly compute cost and avoids consuming the four-vCPU G/VT quota, but does not remove the GPU node group or its supporting subnet resources.
+
 Install a pinned NVIDIA device-plugin chart, AWS Load Balancer Controller with reviewed least-privilege IAM, and DNS/certificate resources before enabling ingress or persistent observability. ALB/NVIDIA controller installations are operator prerequisites; Terraform defines the EBS CSI add-on with Pod Identity. no cluster-admin credentials or wildcard controller policy is fabricated here. ALB and certificates are intentionally not created by Terraform because ingress reconciliation owns the ALB.
 
 Pod Identity grants application service account access only to the environment's documents, research queue and secret containers. Terraform defines a separate observability role scoped to the traces bucket and service account research-observability. It must not inherit the application service account.
@@ -25,6 +27,8 @@ Pod Identity grants application service account access only to the environment's
 Retained resources have prevent_destroy. RDS has deletion protection and mandatory final snapshots: ordinary terraform destroy will fail until a reviewed lifecycle procedure verifies durable database, ClickHouse and identity backups, drains work and intentionally changes protection. This is deliberate fail-closed behavior, not an automatic shutdown implementation.
 
 A complete four-hour AWS-side expiry controller, backup/restore implementation, safe draining, cost admission and teardown inventory are prerequisites for staging. Establish live recovery evidence in the first closed staging rehearsal with synthetic data and a reviewed provisioning-failure cleanup path; see [ADR-0009](../docs/decisions/0009-first-staging-recovery-rehearsal.md). Successful recovery is required before public ingress opens. The lifecycle deployment command currently refuses to provision because the operational prerequisites are incomplete. Foundation purge must explicitly inventory versions, secrets, ECR, SNS topics, KMS keys and Cognito; it cannot be achieved by a generic destroy command. The alert topic and key have `prevent_destroy` and must be included in retained-resource inventory and explicit purge handling.
+
+The expiry source ZIP can be prepared with [the archive packager](../docs/expiry-source-archive.md), but it still must be uploaded to a versioned, KMS-encrypted object and paired with the exact reviewed CodeBuild image, destroy/backup IAM policy, runtime and management network, and Kubernetes RBAC before the schedule is applied.
 
 ## Limits
 
