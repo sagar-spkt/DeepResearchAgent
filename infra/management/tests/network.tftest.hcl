@@ -89,8 +89,12 @@ run "ephemeral_runner_is_scoped_and_private" {
     error_message = "Bootstrap must pin the runner checksum and contain no registration token value."
   }
   assert {
-    condition     = strcontains(aws_instance.runner[0].user_data, "https://\\1.ubuntu.com/ubuntu") && strcontains(aws_instance.runner[0].user_data, "apt-get update")
-    error_message = "The private runner must install packages over the HTTPS-only egress rule."
+    condition     = strcontains(aws_instance.runner[0].user_data, "/^URIs:/s#http://#https://#g") && strcontains(aws_instance.runner[0].user_data, "apt-get update") && !strcontains(aws_instance.runner[0].user_data, "apt-get install -y --no-install-recommends awscli")
+    error_message = "The private runner must rewrite all Ubuntu source URIs to HTTPS and avoid the removed Noble awscli package."
+  }
+  assert {
+    condition     = strcontains(aws_instance.runner[0].user_data, "https://awscli.amazonaws.com/v2/install.sh.sig") && strcontains(aws_instance.runner[0].user_data, "gpg --batch --verify") && strcontains(aws_instance.runner[0].user_data, "FB5DB77FD5C118B80511ADA8A6310ACC4672475C") && strcontains(aws_instance.runner[0].user_data, "aws_cli_version=2.40.3") && strcontains(aws_instance.runner[0].user_data, "--system --version")
+    error_message = "AWS CLI installation must verify the official signed installer against its pinned signing key fingerprint."
   }
   assert {
     condition = toset(flatten([
