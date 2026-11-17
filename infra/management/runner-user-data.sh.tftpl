@@ -1,0 +1,73 @@
+#!/bin/bash
+set -Eeuo pipefail
+set +x
+export AWS_DEFAULT_REGION=us-east-1
+terminate_self() {
+  local token instance_id
+  token=$(curl --fail --silent --show-error --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || { shutdown -h now || true; return; }
+  instance_id=$(curl --fail --silent --show-error --header "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/instance-id) || { shutdown -h now || true; return; }
+  aws ec2 terminate-instances --instance-ids "$instance_id" >/dev/null 2>&1 || shutdown -h now || true
+}
+trap terminate_self ERR
+for command in curl sha256sum tar aws systemctl; do command -v "$command" >/dev/null; done
+id runner >/dev/null 2>&1
+id -nG runner | tr ' ' '\n' | grep -Fx docker >/dev/null
+install -d -o runner -g runner /opt/actions-runner /run/actions-runner
+archive=/run/actions-runner/runner.tar.gz
+token_file=/run/actions-runner/token
+chmod 700 /run/actions-runner
+curl --fail --silent --show-error --location "https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-x64-${version}.tar.gz" -o "$archive"
+printf '%s  %s\n' '${sha256}' "$archive" | sha256sum --check --status
+tar -xzf "$archive" -C /opt/actions-runner
+chown -R runner:runner /opt/actions-runner
+rm -f "$archive"
+aws ssm get-parameter --name '${parameter_name}' --with-decryption --query Parameter.Value --output text >"$token_file"
+chmod 600 "$token_file"
+aws ssm delete-parameter --name '${parameter_name}' >/dev/null
+token=$(cat "$token_file")
+rm -f "$token_file"
+if [[ -z "$token" || "$token" == "None" ]]; then exit 1; fi
+su - runner -c "cd /opt/actions-runner && ./config.sh --unattended --disableupdate --ephemeral --url 'https://github.com/${repository}' --token '$token' --labels 'self-hosted,linux,staging-vpc' --name 'staging-${session_id}'"
+unset token
+cat >/usr/local/sbin/actions-runner-terminate <<'HOOK'
+#!/bin/bash
+set -eu
+export AWS_DEFAULT_REGION=us-east-1
+token=$(curl --fail --silent --show-error --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
+instance_id=$(curl --fail --silent --show-error --header "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/instance-id)
+aws ec2 terminate-instances --instance-ids "$instance_id" >/dev/null || shutdown -h now
+HOOK
+chmod 700 /usr/local/sbin/actions-runner-terminate
+cat >/etc/systemd/system/actions-runner.service <<'UNIT'
+[Unit]
+Description=One-job GitHub Actions staging runner
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=runner
+WorkingDirectory=/opt/actions-runner
+Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/sbin/actions-runner-terminate
+Environment=AWS_DEFAULT_REGION=us-east-1
+ExecStart=/opt/actions-runner/run.sh
+Restart=no
+UNIT
+cat >/etc/systemd/system/actions-runner-watchdog.service <<'UNIT'
+[Unit]
+Description=Terminate staging runner if no job completes
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/actions-runner-terminate
+UNIT
+cat >/etc/systemd/system/actions-runner-watchdog.timer <<'UNIT'
+[Unit]
+Description=Hard lifetime bound for ephemeral staging runner
+[Timer]
+OnActiveSec=85min
+Unit=actions-runner-watchdog.service
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now actions-runner-watchdog.timer actions-runner.service
+trap - ERR

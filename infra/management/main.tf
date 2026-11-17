@@ -54,6 +54,54 @@ variable "availability_zone" {
   }
 }
 
+variable "enable_github_runner" {
+  type    = bool
+  default = false
+}
+variable "github_repository" {
+  type        = string
+  default     = ""
+  description = "Exact owner/repository for the ephemeral deployment runner."
+  validation {
+    condition     = var.github_repository == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "Use the exact owner/repository name."
+  }
+}
+variable "github_runner_ami_id" {
+  type        = string
+  default     = ""
+  description = "Reviewed immutable x86_64 Linux AMI ID with Docker, AWS CLI, git, curl, jq and Python 3 installed."
+  validation {
+    condition     = var.github_runner_ami_id == "" || can(regex("^ami-[0-9a-f]{8,17}$", var.github_runner_ami_id))
+    error_message = "Provide an immutable AMI ID."
+  }
+}
+variable "github_runner_registration_parameter" {
+  type        = string
+  default     = ""
+  description = "Pre-created one-time SSM SecureString parameter containing a repo-scoped registration token. Never pass the token to Terraform."
+  validation {
+    condition     = var.github_runner_registration_parameter == "" || can(regex("^/deepresearch/runner/[a-z0-9-]+/[a-z0-9-]+$", var.github_runner_registration_parameter))
+    error_message = "Use a session-scoped parameter under /deepresearch/runner."
+  }
+}
+variable "github_runner_version" {
+  type    = string
+  default = "2.338.2"
+  validation {
+    condition     = var.github_runner_version == "2.338.2"
+    error_message = "Runner version is pinned to the reviewed release."
+  }
+}
+variable "github_runner_sha256" {
+  type    = string
+  default = "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
+  validation {
+    condition     = var.github_runner_sha256 == "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
+    error_message = "Runner checksum is pinned to the reviewed Linux x64 archive."
+  }
+}
+
 locals { name = "deepresearch-${var.environment}-management-${var.session_id}" }
 
 resource "aws_vpc" "management" {
@@ -117,6 +165,132 @@ resource "aws_vpc_endpoint" "s3" {
   service_name      = "com.amazonaws.${var.region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.executor.id]
+}
+
+locals {
+  runner_enabled       = var.enable_github_runner
+  runner_parameter_arn = "arn:aws:ssm:${var.region}:${var.account_id}:parameter${var.github_runner_registration_parameter}"
+  runner_tags = {
+    Project   = "deepresearch", Environment = var.environment, Session = var.session_id,
+    Component = "github-actions-runner", ManagedBy = "terraform"
+  }
+}
+
+resource "aws_kms_key" "runner_token" {
+  description             = "One-time GitHub runner registration token for ${var.session_id}"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+}
+
+data "aws_iam_policy_document" "runner_assume" {
+  count = local.runner_enabled ? 1 : 0
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+resource "aws_iam_role" "runner" {
+  count              = local.runner_enabled ? 1 : 0
+  name               = "${local.name}-runner"
+  assume_role_policy = data.aws_iam_policy_document.runner_assume[0].json
+  tags               = local.runner_tags
+}
+data "aws_iam_policy_document" "runner" {
+  count = local.runner_enabled ? 1 : 0
+  statement {
+    actions   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+    resources = [local.runner_parameter_arn]
+  }
+  statement {
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.runner_token.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = [local.runner_parameter_arn]
+    }
+  }
+  statement {
+    actions   = ["ec2:TerminateInstances"]
+    resources = ["arn:aws:ec2:${var.region}:${var.account_id}:instance/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Component"
+      values   = ["github-actions-runner"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Session"
+      values   = [var.session_id]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Environment"
+      values   = [var.environment]
+    }
+  }
+}
+resource "aws_iam_role_policy" "runner" {
+  count  = local.runner_enabled ? 1 : 0
+  role   = aws_iam_role.runner[0].id
+  policy = data.aws_iam_policy_document.runner[0].json
+}
+resource "aws_iam_instance_profile" "runner" {
+  count = local.runner_enabled ? 1 : 0
+  name  = "${local.name}-runner"
+  role  = aws_iam_role.runner[0].name
+}
+
+resource "aws_instance" "runner" {
+  count                                = local.runner_enabled ? 1 : 0
+  ami                                  = var.github_runner_ami_id
+  instance_type                        = "m6i.xlarge"
+  subnet_id                            = aws_subnet.executor.id
+  vpc_security_group_ids               = [aws_security_group.executor.id]
+  iam_instance_profile                 = aws_iam_instance_profile.runner[0].name
+  associate_public_ip_address          = false
+  instance_initiated_shutdown_behavior = "terminate"
+  user_data_replace_on_change          = true
+  user_data                            = local.runner_enabled ? templatefile("${path.module}/runner-user-data.sh.tftpl", { version = var.github_runner_version, sha256 = var.github_runner_sha256, repository = var.github_repository, parameter_name = var.github_runner_registration_parameter, session_id = var.session_id }) : ""
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+  root_block_device {
+    encrypted             = true
+    volume_type           = "gp3"
+    volume_size           = 40
+    delete_on_termination = true
+  }
+  tags = local.runner_tags
+  lifecycle {
+    precondition {
+      condition     = !local.runner_enabled || (var.github_runner_ami_id != "" && var.github_repository != "" && var.github_runner_registration_parameter != "")
+      error_message = "Enabling the runner requires a pinned AMI, exact repository, and pre-created token parameter name."
+    }
+    precondition {
+      condition     = !local.runner_enabled || var.github_runner_registration_parameter == "/deepresearch/runner/${var.session_id}/registration"
+      error_message = "Runner token parameter must match the current session-scoped name."
+    }
+  }
+}
+
+output "github_runner_instance_id" {
+  value       = try(aws_instance.runner[0].id, null)
+  description = "Ephemeral runner instance ID, if enabled."
+}
+output "github_runner_token_kms_key_arn" {
+  value       = aws_kms_key.runner_token.arn
+  description = "KMS key ARN required to securely stage the one-time runner token."
 }
 
 output "vpc_id" { value = aws_vpc.management.id }
