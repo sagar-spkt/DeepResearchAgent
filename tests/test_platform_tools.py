@@ -157,25 +157,30 @@ class PlatformToolsTest(unittest.TestCase):
                     )
                     self.assertEqual(expected, result.returncode)
 
-    def test_staging_deploy_requires_exact_manual_confirmation(self):
+    def test_staging_deploy_requires_mode_specific_manual_confirmation(self):
         workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
         step = next(
             step
             for step in workflow["jobs"]["required-checks"]["steps"]
             if step.get("name") == "Require manual authorization when dispatched"
         )
-        for event, confirmation, expected in [
-            ("workflow_dispatch", "", 1),
-            ("workflow_dispatch", "launch", 1),
-            ("workflow_dispatch", "I AUTHORIZE STAGING DEPLOYMENT", 0),
-            ("push", "", 0),
-        ]:
-            with self.subTest(event=event, confirmation=confirmation):
+        cases = [
+            ("workflow_dispatch", "public", "", 1),
+            ("workflow_dispatch", "public", "launch", 1),
+            ("workflow_dispatch", "public", "I AUTHORIZE STAGING DEPLOYMENT", 0),
+            ("workflow_dispatch", "closed-rehearsal", "I AUTHORIZE STAGING DEPLOYMENT", 1),
+            ("workflow_dispatch", "closed-rehearsal", "I AUTHORIZE CLOSED STAGING REHEARSAL", 0),
+            ("workflow_dispatch", "unknown", "I AUTHORIZE STAGING DEPLOYMENT", 1),
+            ("push", "public", "", 0),
+        ]
+        for event, mode, confirmation, expected in cases:
+            with self.subTest(event=event, mode=mode, confirmation=confirmation):
                 result = subprocess.run(
                     ["bash", "-c", step["run"]],
                     env={
                         **os.environ,
                         "EVENT_NAME": event,
+                        "DEPLOYMENT_MODE": mode,
                         "STAGING_CONFIRMATION": confirmation,
                         "GITHUB_ACTOR": "test-operator",
                         "GITHUB_SHA": "a" * 40,
@@ -186,37 +191,74 @@ class PlatformToolsTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, result.returncode)
 
-    def test_staging_deploy_requires_recovery_and_network_gates(self):
+    def test_staging_deploy_requires_distinct_public_and_closed_readiness_gates(self):
         workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
         job = workflow["jobs"]["recovery-gate"]
         step = next(step for step in job["steps"] if step.get("id") == "gate")
+
+        def evaluate(**values):
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "output"
+                summary = Path(directory) / "summary"
+                result = subprocess.run(
+                    ["bash", "-c", step["run"]],
+                    env={
+                        **os.environ,
+                        "DEPLOYMENT_MODE": "public",
+                        "EVENT_NAME": "push",
+                        "GIT_REF": "refs/heads/main",
+                        "RECOVERY_ACCEPTED": "",
+                        "NETWORK_READY": "",
+                        "ADMISSION_READY": "",
+                        "EXPIRY_READY": "",
+                        "ARTIFACTS_READY": "",
+                        "CLEANUP_READY": "",
+                        "GITHUB_OUTPUT": str(output),
+                        "GITHUB_STEP_SUMMARY": str(summary),
+                        **values,
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                return output.read_text(), summary.read_text()
+
         cases = [
-            ("", "", "false", "backup/restore rehearsal"),
-            ("false", "true", "false", "backup/restore rehearsal"),
-            ("true", "", "false", "in-VPC EKS deployment runner"),
-            ("true", "true", "true", "runner gates are accepted"),
+            ({"RECOVERY_ACCEPTED": "", "NETWORK_READY": ""}, "false", "backup/restore rehearsal"),
+            ({"RECOVERY_ACCEPTED": "false", "NETWORK_READY": "true"}, "false", "backup/restore rehearsal"),
+            ({"RECOVERY_ACCEPTED": "true", "NETWORK_READY": ""}, "false", "in-VPC EKS deployment runner"),
+            ({"RECOVERY_ACCEPTED": "true", "NETWORK_READY": "true"}, "true", "runner gates are accepted"),
         ]
-        for recovery, network, expected, message in cases:
-            with self.subTest(recovery=recovery, network=network):
-                with tempfile.TemporaryDirectory() as directory:
-                    output = Path(directory) / "output"
-                    summary = Path(directory) / "summary"
-                    result = subprocess.run(
-                        ["bash", "-c", step["run"]],
-                        env={
-                            **os.environ,
-                            "RECOVERY_ACCEPTED": recovery,
-                            "NETWORK_READY": network,
-                            "GITHUB_OUTPUT": str(output),
-                            "GITHUB_STEP_SUMMARY": str(summary),
-                        },
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    self.assertEqual(0, result.returncode)
-                    self.assertEqual(f"accepted={expected}\n", output.read_text())
-                    self.assertIn(message, summary.read_text())
+        for values, expected, message in cases:
+            output, summary = evaluate(**values)
+            self.assertEqual(f"accepted={expected}\n", output)
+            self.assertIn(message, summary)
+
+        closed_defaults = {
+            "DEPLOYMENT_MODE": "closed-rehearsal",
+            "EVENT_NAME": "workflow_dispatch",
+            "GIT_REF": "refs/heads/main",
+            "NETWORK_READY": "true",
+            "ADMISSION_READY": "true",
+            "EXPIRY_READY": "true",
+            "ARTIFACTS_READY": "true",
+            "CLEANUP_READY": "true",
+        }
+        output, summary = evaluate(**closed_defaults, RECOVERY_ACCEPTED="false")
+        self.assertEqual("accepted=true\n", output)
+        self.assertIn("Public recovery acceptance remains false", summary)
+        output, summary = evaluate(
+            **{**closed_defaults, "ADMISSION_READY": "false"}, RECOVERY_ACCEPTED="false"
+        )
+        self.assertEqual("accepted=false\n", output)
+        self.assertIn("lifecycle admission", summary)
+        output, summary = evaluate(
+            **{**closed_defaults, "EVENT_NAME": "push"}, RECOVERY_ACCEPTED="false"
+        )
+        self.assertEqual("accepted=false\n", output)
+        self.assertIn("manual dispatch on main", summary)
+
         self.assertEqual(
             "github.ref == 'refs/heads/main' && needs.recovery-gate.outputs.accepted == 'true'",
             workflow["jobs"]["deploy"]["if"],
@@ -225,6 +267,14 @@ class PlatformToolsTest(unittest.TestCase):
             ["self-hosted", "linux", "staging-vpc"],
             workflow["jobs"]["deploy"]["runs-on"],
         )
+        deploy = next(
+            step
+            for step in workflow["jobs"]["deploy"]["steps"]
+            if step.get("name") == "Bootstrap the database and deploy the reviewed staging chart"
+        )["run"]
+        closed = deploy.split('elif [ "$DEPLOYMENT_MODE" = closed-rehearsal ]', 1)[1]
+        self.assertIn("--set vllm.enabled=false --set ingress.enabled=false", closed)
+        self.assertIn('if [ "$DEPLOYMENT_MODE" = public ]; then\n  lease_guard python3 scripts/staging_dns_alias.py', closed)
 
     def test_deploy_installs_bootstrap_secret_cleanup_before_kubernetes_secrets(self):
         workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
