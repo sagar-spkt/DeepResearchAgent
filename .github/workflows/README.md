@@ -1,5 +1,7 @@
 # AWS lifecycle workflows
 
+Application, infrastructure, and repository checks run on direct pushes to every branch, pull requests, and manual dispatch. This lets a direct-to-main workflow use check results from the exact commit without requiring a pull request. The main ruleset continues to require all seven CI contexts.
+
 The checked-in lifecycle workflows are manual, preparation-only gates. They do not provision, back up, restore, shut down, promote, or purge AWS resources. Each currently fails closed in `scripts/platform_lifecycle.py` before creating AWS clients. The staging and production OIDC roles trust this repository but have no AWS permissions; workflows request no OIDC token.
 
 ## Solo production release authorization

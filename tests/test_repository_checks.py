@@ -109,6 +109,19 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertNotIn("id-token", serialized)
         self.assertNotIn("aws-actions/configure-aws-credentials", serialized)
 
+    def test_required_ci_workflows_run_on_direct_branch_pushes(self):
+        for filename in [
+            "application-checks.yml",
+            "infrastructure-checks.yml",
+            "repository-checks.yml",
+        ]:
+            with self.subTest(workflow=filename):
+                data = json.loads((ROOT / ".github/workflows" / filename).read_text())
+                self.assertEqual(
+                    {"push", "pull_request", "workflow_dispatch"}, set(data["on"])
+                )
+                self.assertEqual(["**"], data["on"]["push"]["branches"])
+
     def test_infrastructure_workflow_renders_admin_console_guards(self):
         workflow = ROOT / ".github/workflows/infrastructure-checks.yml"
         data = json.loads(workflow.read_text())
