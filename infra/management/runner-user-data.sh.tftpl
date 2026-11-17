@@ -21,7 +21,7 @@ on_exit() {
   trap - EXIT
   if [[ "$bootstrap_complete" != true ]]; then
     printf '[runner-bootstrap] failed at %s with exit %s\n' "$bootstrap_step" "$status" >/dev/console 2>/dev/null || true
-    rm -f /run/actions-runner/token /opt/actions-runner/configure-once.sh || true
+    rm -f /run/actions-runner/token /run/actions-runner/configure.log /opt/actions-runner/configure-once.sh || true
     local token instance_id safe_step
     token=$(curl --fail --silent --show-error --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || token=
     if [[ -n "$token" ]]; then
@@ -204,8 +204,21 @@ rm -f /run/actions-runner/token
 CONFIG
 chown root:docker /opt/actions-runner/configure-once.sh
 chmod 750 /opt/actions-runner/configure-once.sh
-su - runner -c /opt/actions-runner/configure-once.sh
-rm -f /opt/actions-runner/configure-once.sh /run/actions-runner/token
+if ! su - runner -c /opt/actions-runner/configure-once.sh >/run/actions-runner/configure.log 2>&1; then
+  if grep -Eiq 'already exists|already been registered|name.*already' /run/actions-runner/configure.log; then
+    set_bootstrap_step "configure runner name conflict"
+  elif grep -Eiq '401|403|forbidden|not authorized|permission denied' /run/actions-runner/configure.log; then
+    set_bootstrap_step "configure runner authorization failure"
+  elif grep -Eiq 'timed out|timeout|connection|TLS|unable to connect|could not resolve' /run/actions-runner/configure.log; then
+    set_bootstrap_step "configure runner network failure"
+  elif grep -Eiq 'token|unauthorized|invalid credentials|failed to get' /run/actions-runner/configure.log; then
+    set_bootstrap_step "configure runner token failure"
+  else
+    set_bootstrap_step "configure runner other failure"
+  fi
+  exit 1
+fi
+rm -f /opt/actions-runner/configure-once.sh /run/actions-runner/configure.log /run/actions-runner/token
 cat >/etc/systemd/system/actions-runner.service <<'UNIT'
 [Unit]
 Description=One-job GitHub Actions staging runner

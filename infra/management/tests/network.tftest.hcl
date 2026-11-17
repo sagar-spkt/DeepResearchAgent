@@ -93,6 +93,10 @@ run "ephemeral_runner_is_scoped_and_private" {
     error_message = "Bootstrap failure reporting must write only a fixed stage and exit code through narrowly scoped instance-tag permission."
   }
   assert {
+    condition     = strcontains(aws_instance.runner[0].user_data, "configure.log") && strcontains(aws_instance.runner[0].user_data, "configure runner name conflict") && strcontains(aws_instance.runner[0].user_data, "configure runner authorization failure") && strcontains(aws_instance.runner[0].user_data, "configure runner network failure") && strcontains(aws_instance.runner[0].user_data, "configure runner token failure") && strcontains(aws_instance.runner[0].user_data, "configure runner other failure")
+    error_message = "Runner configuration diagnostics must report only a fixed, non-secret failure category and remove the captured output."
+  }
+  assert {
     condition     = strcontains(aws_instance.runner[0].user_data, "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40") && !strcontains(aws_instance.runner[0].user_data, "token-value")
     error_message = "Bootstrap must pin the runner checksum and contain no registration token value."
   }
