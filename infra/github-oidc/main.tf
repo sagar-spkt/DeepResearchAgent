@@ -675,7 +675,7 @@ locals {
     {
       Sid       = "ManageSessionTaggedManagementNetwork"
       Effect    = "Allow"
-      Action    = ["ec2:DeleteVpc", "ec2:ModifyVpcAttribute", "ec2:DeleteSubnet", "ec2:CreateRoute", "ec2:ReplaceRoute", "ec2:DeleteRoute", "ec2:AssociateRouteTable", "ec2:DisassociateRouteTable", "ec2:AttachInternetGateway", "ec2:DetachInternetGateway", "ec2:DeleteInternetGateway", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:DeleteVpcEndpoints", "ec2:ModifyVpcEndpoint", "ec2:DeleteNatGateway", "ec2:ReleaseAddress", "ec2:TerminateInstances", "ec2:DeleteTags"]
+      Action    = ["ec2:DeleteRouteTable", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute", "ec2:DeleteSubnet", "ec2:CreateRoute", "ec2:ReplaceRoute", "ec2:DeleteRoute", "ec2:AssociateRouteTable", "ec2:DisassociateRouteTable", "ec2:AttachInternetGateway", "ec2:DetachInternetGateway", "ec2:DeleteInternetGateway", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:DeleteVpcEndpoints", "ec2:ModifyVpcEndpoint", "ec2:DeleteNatGateway", "ec2:ReleaseAddress", "ec2:TerminateInstances", "ec2:DeleteTags"]
       Resource  = "*"
       Condition = { StringEquals = merge(local.staging_session_resource_tags, { "aws:RequestedRegion" = var.region }) }
     },
