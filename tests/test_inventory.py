@@ -762,6 +762,143 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual("21600", self.db.items["month#2026-11"]["reserved_seconds"]["N"])
         self.assertTrue(self.fixtures["calls"])
 
+    def bootstrap_evidence(self, directory):
+        import hashlib
+        from pathlib import Path
+
+        saved_plan = Path(directory) / "bootstrap.tfplan"
+        saved_plan.write_bytes(b"reviewed bootstrap cleanup plan")
+        cleanup_plan = {
+            "operation": "bootstrap-cleanup",
+            "config": CONFIG,
+            "saved_plan": str(saved_plan),
+            "saved_plan_sha256": hashlib.sha256(saved_plan.read_bytes()).hexdigest(),
+            "deletions": ["aws_eks_cluster.main", "aws_db_instance.main"],
+            "preconditions": [
+                "first staging provision only; application release has not been installed",
+                "research namespace must be absent",
+                "RDS final snapshot is retained; foundation and management network are outside this plan",
+            ],
+        }
+        receipt = {
+            "operation": "bootstrap-cleanup-receipt",
+            "config": CONFIG,
+            "plan_hash": digest(cleanup_plan),
+            "executed": True,
+            "remaining_resources": [],
+            "retained_data": True,
+        }
+        return cleanup_plan, receipt
+
+    def test_bootstrap_release_uses_final_snapshot_without_claiming_prebackup(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory)
+            final_id = CONFIG["database_identifier"] + "-" + CONFIG["session_id"] + "-final"
+            self.fixtures["pages"][("rds", "describe_db_snapshots")] = [
+                {
+                    "DBSnapshotIdentifier": final_id,
+                    "DBInstanceIdentifier": CONFIG["database_identifier"],
+                    "DBSnapshotArn": arn("rds", "snapshot:" + final_id),
+                    "Status": "available",
+                    "Encrypted": True,
+                }
+            ]
+            plan = release_plan(
+                CONFIG,
+                datetime.fromtimestamp(self.clock[0], timezone.utc),
+                cleanup_plan,
+                receipt,
+            )
+            result = release_admission(
+                self.store,
+                CONFIG,
+                self.lease,
+                self.clients,
+                plan,
+                digest(plan),
+                cleanup_plan=cleanup_plan,
+                cleanup_receipt=receipt,
+            )
+
+        self.assertEqual("bootstrap-release", plan["operation"])
+        self.assertTrue(result["admission_released"])
+        self.assertEqual("first-provision-bootstrap-cleanup", result["closeout_mode"])
+        self.assertNotIn("active-session", self.db.items)
+        self.assertEqual(
+            [final_id],
+            [item["id"].rsplit(":", 1)[-1] for item in result["inventory"]["retained_resources"] if item["kind"] == "rds-snapshot"],
+        )
+
+    def test_bootstrap_release_still_requires_management_resources_gone(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory)
+            plan = release_plan(
+                CONFIG,
+                datetime.fromtimestamp(self.clock[0], timezone.utc),
+                cleanup_plan,
+                receipt,
+            )
+            self.fixtures["pages"][("ec2", "describe_vpcs")] = [
+                {
+                    "VpcId": "vpc-management",
+                    "State": "available",
+                    "CidrBlock": "10.61.0.0/16",
+                    "Tags": [
+                        {"Key": "Project", "Value": "deepresearch"},
+                        {"Key": "Environment", "Value": "staging"},
+                        {"Key": "Session", "Value": "session-1"},
+                        {"Key": "ManagedBy", "Value": "terraform"},
+                    ],
+                }
+            ]
+            with self.assertRaises(Refused):
+                release_admission(
+                    self.store,
+                    CONFIG,
+                    self.lease,
+                    self.clients,
+                    plan,
+                    digest(plan),
+                    cleanup_plan=cleanup_plan,
+                    cleanup_receipt=receipt,
+                )
+        self.assertIn("active-session", self.db.items)
+
+    def test_bootstrap_release_rejects_receipt_for_different_cleanup_plan(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory)
+            receipt["plan_hash"] = "0" * 64
+            with self.assertRaises(Refused):
+                release_plan(
+                    CONFIG,
+                    datetime.fromtimestamp(self.clock[0], timezone.utc),
+                    cleanup_plan,
+                    receipt,
+                )
+
+    def test_bootstrap_release_rejects_cleanup_plan_without_no_writer_precondition(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory)
+            cleanup_plan["preconditions"].remove(
+                "first staging provision only; application release has not been installed"
+            )
+            receipt["plan_hash"] = digest(cleanup_plan)
+            with self.assertRaises(Refused):
+                release_plan(
+                    CONFIG,
+                    datetime.fromtimestamp(self.clock[0], timezone.utc),
+                    cleanup_plan,
+                    receipt,
+                )
+
     def test_active_or_unavailable_provider_never_releases(self):
         self.fixtures["errors"][("eks", "describe_cluster")] = "AccessDeniedException"
         with self.assertRaises(Refused):

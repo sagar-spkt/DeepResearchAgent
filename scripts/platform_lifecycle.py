@@ -91,6 +91,7 @@ def main():
     p.add_argument("--runtime-dir", type=Path)
     p.add_argument("--var-file", type=Path)
     p.add_argument("--saved-plan", type=Path)
+    p.add_argument("--bootstrap-cleanup-plan", type=Path)
     p.add_argument("--environment", choices=["staging", "production"])
     p.add_argument("--execute", action="store_true")
     args = p.parse_args()
@@ -123,10 +124,32 @@ def main():
                 "bootstrap-cleanup": "bootstrap-cleanup",
                 "expiry": "expiry",
                 "admit": "admission",
-                "release": "release",
-            }[args.operation]
-            if plan.get("operation") != expected_operation:
+            }.get(args.operation)
+            if args.operation == "release":
+                if plan.get("operation") not in {"release", "bootstrap-release"}:
+                    raise Refused("Command operation does not match the approved plan")
+            elif plan.get("operation") != expected_operation:
                 raise Refused("Command operation does not match the approved plan")
+            cleanup_plan = cleanup_receipt = None
+            if plan.get("operation") == "bootstrap-release":
+                if not args.bootstrap_cleanup_plan or not args.receipt:
+                    raise Refused(
+                        "Bootstrap release requires --bootstrap-cleanup-plan and --receipt"
+                    )
+                cleanup_plan = load(args.bootstrap_cleanup_plan)
+                cleanup_receipt = load(args.receipt)
+                from lifecycle.inventory import _validate_bootstrap_cleanup_evidence
+
+                _validate_bootstrap_cleanup_evidence(
+                    plan["config"], cleanup_plan, cleanup_receipt
+                )
+                if (
+                    plan.get("bootstrap_cleanup_plan_sha256") != digest(cleanup_plan)
+                    or plan.get("bootstrap_cleanup_receipt_sha256") != digest(cleanup_receipt)
+                ):
+                    raise Refused("Bootstrap release artifacts do not match the approved release plan")
+            elif args.bootstrap_cleanup_plan:
+                raise Refused("--bootstrap-cleanup-plan is only valid for bootstrap release")
             if args.environment and args.environment != plan["config"]["environment"]:
                 raise Refused("Environment argument conflicts with the approved plan")
             reserved = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -160,7 +183,14 @@ def main():
                 aws.runner = guarded_runner
                 if args.operation == "release":
                     result = release_admission(
-                        control, plan["config"], lease, aws.clients, plan, args.approved_plan_hash
+                        control,
+                        plan["config"],
+                        lease,
+                        aws.clients,
+                        plan,
+                        args.approved_plan_hash,
+                        cleanup_plan=cleanup_plan,
+                        cleanup_receipt=cleanup_receipt,
                     )
                 elif args.operation == "expiry":
                     result = execute_expiry(
@@ -187,7 +217,17 @@ def main():
             if args.operation == "plan-release":
                 if config is None:
                     raise Refused("--config required")
-                result = release_plan(config)
+                if bool(args.bootstrap_cleanup_plan) != bool(args.receipt):
+                    raise Refused(
+                        "Bootstrap release planning requires both --bootstrap-cleanup-plan and --receipt"
+                    )
+                result = release_plan(
+                    config,
+                    bootstrap_cleanup_plan=(
+                        load(args.bootstrap_cleanup_plan) if args.bootstrap_cleanup_plan else None
+                    ),
+                    cleanup_receipt=load(args.receipt) if args.receipt else None,
+                )
             elif args.operation == "inventory":
                 if config is None:
                     raise Refused("--config required")

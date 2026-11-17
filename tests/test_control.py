@@ -258,6 +258,76 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(2, platform_lifecycle.main())
             self.assertFalse(receipt.exists())
 
+    def test_bootstrap_release_plan_binds_exact_cleanup_plan_and_receipt(self):
+        import contextlib
+        import hashlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        import platform_lifecycle
+        from lifecycle.core import digest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(CONFIG))
+            saved_plan = root / "bootstrap.tfplan"
+            saved_plan.write_bytes(b"reviewed saved plan")
+            cleanup_plan = {
+                "operation": "bootstrap-cleanup",
+                "config": CONFIG,
+                "saved_plan": str(saved_plan),
+                "saved_plan_sha256": hashlib.sha256(saved_plan.read_bytes()).hexdigest(),
+                "deletions": ["aws_eks_cluster.main", "aws_db_instance.main"],
+                "preconditions": [
+                    "first staging provision only; application release has not been installed",
+                    "research namespace must be absent",
+                    "RDS final snapshot is retained; foundation and management network are outside this plan",
+                ],
+            }
+            cleanup_plan_path = root / "bootstrap-cleanup-plan.json"
+            cleanup_plan_path.write_text(json.dumps(cleanup_plan))
+            cleanup_receipt = {
+                "operation": "bootstrap-cleanup-receipt",
+                "config": CONFIG,
+                "plan_hash": digest(cleanup_plan),
+                "executed": True,
+                "remaining_resources": [],
+                "retained_data": True,
+            }
+            cleanup_receipt_path = root / "bootstrap-cleanup-receipt.json"
+            cleanup_receipt_path.write_text(json.dumps(cleanup_receipt))
+            output = root / "bootstrap-release-plan.json"
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "platform_lifecycle.py",
+                        "plan-release",
+                        "--config",
+                        str(config_path),
+                        "--bootstrap-cleanup-plan",
+                        str(cleanup_plan_path),
+                        "--receipt",
+                        str(cleanup_receipt_path),
+                        "--output",
+                        str(output),
+                    ],
+                ),
+                patch.object(
+                    platform_lifecycle, "adapter", side_effect=AssertionError("no clients")
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(0, platform_lifecycle.main())
+            plan = json.loads(output.read_text())
+            self.assertEqual("bootstrap-release", plan["operation"])
+            self.assertEqual(digest(cleanup_plan), plan["bootstrap_cleanup_plan_sha256"])
+            self.assertEqual(digest(cleanup_receipt), plan["bootstrap_cleanup_receipt_sha256"])
+
     def test_bad_release_approval_fails_before_clients_or_journal(self):
         import contextlib
         import io

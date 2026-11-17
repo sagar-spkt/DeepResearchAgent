@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
-from .core import Refused, approve, canonical, digest, validate_config
+from .core import Refused, approve, canonical, digest, file_hash, validate_config
 
 CLIENTS = (
     "sts",
@@ -936,9 +936,31 @@ class InventoryCollector:
                 self.record(self.retained, "expiry-iam-role", result["Role"]["Arn"], billed=False)
 
 
-def release_plan(config, instant=None):
+def release_plan(config, instant=None, bootstrap_cleanup_plan=None, cleanup_receipt=None):
     validate_config(config)
     instant = instant or datetime.now(timezone.utc)
+    if (bootstrap_cleanup_plan is None) != (cleanup_receipt is None):
+        raise Refused("Bootstrap closeout requires both its cleanup plan and receipt")
+    if bootstrap_cleanup_plan is not None:
+        _validate_bootstrap_cleanup_evidence(config, bootstrap_cleanup_plan, cleanup_receipt)
+        return {
+            "version": 1,
+            "operation": "bootstrap-release",
+            "config": config,
+            "created_at": instant.isoformat(),
+            "expires_at": (instant + timedelta(minutes=15)).isoformat(),
+            "bootstrap_cleanup_plan_sha256": digest(bootstrap_cleanup_plan),
+            "bootstrap_cleanup_receipt_sha256": digest(cleanup_receipt),
+            "mutations": [
+                "Collect fresh provider inventory using the first-provision cleanup scope",
+                "Require no runtime or management resources and the retained final snapshot",
+                "Atomically archive completion and remove only the matching active-session admission",
+            ],
+            "retained": [
+                "Monthly reservation counters are never refunded",
+                "Foundation identity/data resources and the final database snapshot remain retained",
+            ],
+        }
     return {
         "version": 1,
         "operation": "release",
@@ -956,7 +978,45 @@ def release_plan(config, instant=None):
     }
 
 
-def release_admission(store, config, lease, clients, plan, approved_hash):
+def _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt):
+    """Bind bootstrap-only closeout to the exact reviewed first-provision cleanup."""
+    if (
+        not isinstance(cleanup_plan, dict)
+        or cleanup_plan.get("operation") != "bootstrap-cleanup"
+        or cleanup_plan.get("config") != config
+    ):
+        raise Refused("Not a matching first-provision bootstrap cleanup plan")
+    required_preconditions = {
+        "first staging provision only; application release has not been installed",
+        "research namespace must be absent",
+        "RDS final snapshot is retained; foundation and management network are outside this plan",
+    }
+    if not required_preconditions.issubset(set(cleanup_plan.get("preconditions", []))):
+        raise Refused("Bootstrap cleanup plan lacks the first-provision/no-writer preconditions")
+    if not {"aws_eks_cluster.main", "aws_db_instance.main"}.issubset(
+        set(cleanup_plan.get("deletions", []))
+    ):
+        raise Refused("Bootstrap cleanup plan does not include the staging runtime")
+    saved_plan, expected_hash = cleanup_plan.get("saved_plan"), cleanup_plan.get("saved_plan_sha256")
+    if not isinstance(saved_plan, str) or not isinstance(expected_hash, str):
+        raise Refused("Bootstrap cleanup plan is missing its saved-plan binding")
+    if file_hash(saved_plan) != expected_hash:
+        raise Refused("Bootstrap cleanup saved plan changed")
+    if (
+        not isinstance(cleanup_receipt, dict)
+        or cleanup_receipt.get("operation") != "bootstrap-cleanup-receipt"
+        or cleanup_receipt.get("config") != config
+        or cleanup_receipt.get("plan_hash") != digest(cleanup_plan)
+        or cleanup_receipt.get("executed") is not True
+        or cleanup_receipt.get("retained_data") is not True
+        or cleanup_receipt.get("remaining_resources") != []
+    ):
+        raise Refused("Bootstrap cleanup receipt does not prove the matching runtime cleanup")
+
+
+def release_admission(
+    store, config, lease, clients, plan, approved_hash, cleanup_plan=None, cleanup_receipt=None
+):
     """Collect fresh provider truth, then archive+release atomically. Never refund time.
 
     Called only from an explicitly authorized CLI operation. A user-supplied JSON
@@ -965,13 +1025,30 @@ def release_admission(store, config, lease, clients, plan, approved_hash):
     """
     validate_config(config)
     approve(plan, approved_hash, datetime.fromtimestamp(store.clock(), timezone.utc))
-    if plan.get("operation") != "release" or plan.get("config") != config:
+    operation = plan.get("operation")
+    if operation not in {"release", "bootstrap-release"} or plan.get("config") != config:
         raise Refused("Not an approved matching admission-release plan")
+    bootstrap_release = operation == "bootstrap-release"
+    if bootstrap_release:
+        _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt)
+        if (
+            plan.get("bootstrap_cleanup_plan_sha256") != digest(cleanup_plan)
+            or plan.get("bootstrap_cleanup_receipt_sha256") != digest(cleanup_receipt)
+        ):
+            raise Refused("Bootstrap release plan evidence hashes do not match the supplied artifacts")
+    elif cleanup_plan is not None or cleanup_receipt is not None:
+        raise Refused("Standard release does not accept bootstrap cleanup evidence")
     if lease.store is not store or lease.config != config:
         raise Refused("Release lease/config mismatch")
     store.assert_admitted(config)
     lease.assert_owned()
-    evidence = InventoryCollector(config, clients, clock=store.clock).collect()
+    evidence = InventoryCollector(
+        config,
+        clients,
+        clock=store.clock,
+        bootstrap_cleanup=bootstrap_release,
+        bootstrap_final_required=bootstrap_release,
+    ).collect()
     lease.assert_owned()
     if not (
         evidence["inventory_complete"]
@@ -998,6 +1075,10 @@ def release_admission(store, config, lease, clients, plan, approved_hash):
         "scope": evidence["scope"],
         "charges_may_continue": True,
     }
+    if bootstrap_release:
+        completion["closeout_mode"] = "first-provision-bootstrap-cleanup"
+        completion["bootstrap_cleanup_plan_sha256"] = digest(cleanup_plan)
+        completion["bootstrap_cleanup_receipt_sha256"] = digest(cleanup_receipt)
     if len(canonical(completion)) > 300_000:
         raise Refused("Completion evidence exceeds safe DynamoDB item size; admission retained")
     key = "completion#" + config["environment"] + "#" + config["session_id"]
