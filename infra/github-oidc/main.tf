@@ -704,6 +704,20 @@ locals {
       Condition = { Bool = { "ec2:Encrypted" = "true" }, StringEquals = { "aws:RequestedRegion" = var.region } }
     },
     {
+      Sid      = "SetOnlyTheSessionRunnerShutdownBehavior"
+      Effect   = "Allow"
+      Action   = ["ec2:ModifyInstanceAttribute"]
+      Resource = "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:instance/*"
+      Condition = {
+        StringEquals = merge(local.staging_session_resource_tags, {
+          "aws:ResourceTag/Component"                       = "github-actions-runner"
+          "aws:RequestedRegion"                             = var.region
+          "ec2:Region"                                      = var.region
+          "ec2:Attribute/instanceInitiatedShutdownBehavior" = "terminate"
+        })
+      }
+    },
+    {
       Sid       = "TagOnlyTheSessionRunnerAtLaunch"
       Effect    = "Allow"
       Action    = ["ec2:CreateTags"]
