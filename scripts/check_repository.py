@@ -89,6 +89,8 @@ def check(root=ROOT):
                                 and job_name == "deploy"
                                 or relative == ".github/workflows/provision-staging.yml"
                                 and job_name == "provision"
+                                or relative == ".github/workflows/publish-expiry-image.yml"
+                                and job_name == "publish"
                             )
                             and job_permissions == {"contents": "read", "id-token": "write"}
                             or relative == ".github/workflows/finalize-staging.yml"

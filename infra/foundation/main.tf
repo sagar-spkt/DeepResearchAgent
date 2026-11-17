@@ -85,7 +85,7 @@ resource "aws_s3_bucket_policy" "tls" {
 
 resource "aws_ecr_repository" "images" {
 
-  for_each             = toset(["backend", "web"])
+  for_each             = toset(["backend", "web", "expiry-runner"])
   name                 = "${local.name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
   image_scanning_configuration {

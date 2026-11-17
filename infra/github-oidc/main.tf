@@ -27,6 +27,7 @@ locals {
     "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/deepresearch-staging/backend",
     "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/deepresearch-staging/web",
   ]
+  staging_expiry_repository_arn      = "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/deepresearch-staging/expiry-runner"
   staging_control_table_arn          = "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/deepresearch-control"
   staging_provisioner_arn            = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-provisioner-github-oidc"
   staging_management_provisioner_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-management-provisioner"
@@ -66,6 +67,81 @@ resource "aws_iam_role" "github_actions" {
         }
       }
     }]
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Expiry images are published by a separate workflow identity with no staging
+# application, lifecycle, or infrastructure permissions.
+resource "aws_iam_role" "staging_expiry_image_publisher" {
+  name                 = "deepresearch-staging-expiry-image-publisher"
+  description          = "GitHub OIDC identity limited to publishing the staging expiry runner image."
+  max_session_duration = 3600
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = local.github_oidc_provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = { StringEquals = {
+        "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        "token.actions.githubusercontent.com:sub" = "${local.repository_subject}:environment:staging"
+        "token.actions.githubusercontent.com:ref" = "refs/heads/main"
+      } }
+    }]
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policies_exclusive" "staging_expiry_image_publisher" {
+  role_name    = aws_iam_role.staging_expiry_image_publisher.name
+  policy_names = [aws_iam_role_policy.staging_expiry_image_publisher.name]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy_attachments_exclusive" "staging_expiry_image_publisher" {
+  role_name   = aws_iam_role.staging_expiry_image_publisher.name
+  policy_arns = []
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy" "staging_expiry_image_publisher" {
+  name = "deepresearch-staging-expiry-image-publisher"
+  role = aws_iam_role.staging_expiry_image_publisher.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AuthenticateToECR"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "PublishOnlyStagingExpiryRunnerImage"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:CompleteLayerUpload",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+        ]
+        Resource = local.staging_expiry_repository_arn
+      },
+    ]
   })
 
   lifecycle {
