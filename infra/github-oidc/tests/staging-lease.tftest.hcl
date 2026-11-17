@@ -100,6 +100,55 @@ run "staging_lease_permissions_are_exactly_scoped" {
     error_message = "The lease permission change must not grant runtime provisioning rights."
   }
   assert {
+    condition = one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CheckExactStagingLifecycleLeaseForMarker"
+      ]).Action == ["dynamodb:ConditionCheckItem"] && one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CheckExactStagingLifecycleLeaseForMarker"
+      ]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["lifecycle-lock"] && one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CheckExactStagingLifecycleLeaseForMarker"
+      ]).Condition["ForAnyValue:StringEquals"]["dynamodb:EnclosingOperation"] == ["TransactWriteItems"] && toset(one([
+        for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+        if statement.Sid == "CheckExactStagingLifecycleLeaseForMarker"
+    ]).Condition["ForAllValues:StringEquals"]["dynamodb:Attributes"]) == toset(["key", "owner_id", "session_id", "expires_at"])
+    error_message = "Marker creation must condition-check only the active owner's exact lifecycle lease."
+  }
+  assert {
+    condition = one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CreateWriteOnceStagingDeploymentMarkers"
+      ]).Action == ["dynamodb:PutItem"] && one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CreateWriteOnceStagingDeploymentMarkers"
+    ]).Resource == "arn:aws:dynamodb:us-east-1:123456789012:table/deepresearch-control"
+    error_message = "The deploy role may only create staging deployment markers in the exact lifecycle table."
+  }
+  assert {
+    condition = toset(one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CreateWriteOnceStagingDeploymentMarkers"
+      ]).Condition["ForAllValues:StringLike"]["dynamodb:LeadingKeys"]) == toset(["app-writers#staging#stg-*"]) && toset(one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CreateWriteOnceStagingDeploymentMarkers"
+      ]).Condition["ForAllValues:StringEquals"]["dynamodb:Attributes"]) == toset(["key", "session_id", "environment", "started_at", "commit_sha", "workflow_run_id"]) && one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "CreateWriteOnceStagingDeploymentMarkers"
+    ]).Condition["ForAnyValue:StringEquals"]["dynamodb:EnclosingOperation"] == ["TransactWriteItems"]
+    error_message = "Marker creation must be limited to staging session keys and the six fixed metadata attributes."
+  }
+  assert {
+    condition = one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "ReadOnlyStagingDeploymentMarkers"
+      ]).Action == ["dynamodb:GetItem"] && one([
+      for statement in jsondecode(aws_iam_role_policy.staging_deployment_marker.policy).Statement : statement
+      if statement.Sid == "ReadOnlyStagingDeploymentMarkers"
+    ]).Condition["ForAllValues:StringLike"]["dynamodb:LeadingKeys"] == ["app-writers#staging#stg-*"]
+    error_message = "Marker reads must be read-only and confined to staging session marker keys."
+  }
+  assert {
     condition = length(flatten([
       for statement in jsondecode(aws_iam_role_policy.staging_deploy.policy).Statement : [
         for action in try(tolist(statement.Action), [statement.Action]) : action
@@ -112,6 +161,7 @@ run "staging_lease_permissions_are_exactly_scoped" {
     condition = toset(aws_iam_role_policies_exclusive.github_actions["staging"].policy_names) == toset([
       "deepresearch-staging-deploy",
       "deepresearch-staging-lifecycle-lease",
+      "deepresearch-staging-deployment-marker",
     ])
     error_message = "The exclusive role policy guard must retain exactly the staging deploy and lease policies."
   }

@@ -74,7 +74,7 @@ class BackupPolicyTests(unittest.TestCase):
 
     def test_lock_mutation_never_changes_admission_or_month_reservations(self):
         table = "arn:aws:dynamodb:us-east-1:123456789012:table/deepresearch-control"
-        for action in ["dynamodb:UpdateItem", "dynamodb:DeleteItem"]:
+        for action in ["dynamodb:UpdateItem"]:
             self.assertTrue(permits(self.policy, action, table, {"dynamodb:LeadingKeys": ["lifecycle-lock"]}))
             for keys in [None, ["active-session"], ["month#2026-11"], ["completion#staging#session-1"], ["lifecycle-lock", "active-session"]]:
                 context = {} if keys is None else {"dynamodb:LeadingKeys": keys}
@@ -100,7 +100,7 @@ class BackupPolicyTests(unittest.TestCase):
     def test_policy_contains_no_destructive_or_permission_management_actions(self):
         actions = {action for statement in self.policy["Statement"] for action in statement["Action"]}
         self.assertFalse(any("*" in action or action.startswith(("iam:", "ec2:", "secretsmanager:")) for action in actions))
-        self.assertEqual({"dynamodb:DeleteItem"}, {action for action in actions if ":Delete" in action})
+        self.assertFalse(any(":Delete" in action for action in actions))
         self.assertFalse(any("*" == resource for statement in self.policy["Statement"] for resource in statement["Resource"]))
         self.assertNotIn("rds:ModifyDBInstance", actions)
 

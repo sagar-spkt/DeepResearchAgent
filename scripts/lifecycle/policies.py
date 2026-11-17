@@ -69,7 +69,7 @@ def backup_policy(config):
         "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["active-session", "lifecycle-lock"]},
         "Null": {"dynamodb:LeadingKeys": "false"},
     })
-    allow("MaintainLeaseOnly", ["dynamodb:UpdateItem", "dynamodb:DeleteItem"], [table], {
+    allow("MaintainLeaseOnly", ["dynamodb:UpdateItem"], [table], {
         "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["lifecycle-lock"]},
         "Null": {"dynamodb:LeadingKeys": "false"},
     })

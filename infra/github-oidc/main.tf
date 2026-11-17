@@ -91,6 +91,7 @@ resource "aws_iam_role_policies_exclusive" "github_actions" {
   policy_names = each.key == "staging" ? [
     aws_iam_role_policy.staging_deploy.name,
     aws_iam_role_policy.staging_lifecycle_lease.name,
+    aws_iam_role_policy.staging_deployment_marker.name,
   ] : []
 
   lifecycle {
@@ -201,6 +202,58 @@ resource "aws_iam_role_policy" "staging_lifecycle_lease" {
         Condition = {
           "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["lifecycle-lock"] }
           Null                        = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+    ]
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy" "staging_deployment_marker" {
+  name = "deepresearch-staging-deployment-marker"
+  role = aws_iam_role.github_actions["staging"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadOnlyStagingDeploymentMarkers"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = local.staging_control_table_arn
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["app-writers#staging#stg-*"] }
+          Null                      = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+      {
+        Sid      = "CheckExactStagingLifecycleLeaseForMarker"
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = local.staging_control_table_arn
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "dynamodb:LeadingKeys" = ["lifecycle-lock"]
+            "dynamodb:Attributes"  = ["key", "owner_id", "session_id", "expires_at"]
+          }
+          "ForAnyValue:StringEquals" = { "dynamodb:EnclosingOperation" = ["TransactWriteItems"] }
+          Null                       = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+      {
+        Sid      = "CreateWriteOnceStagingDeploymentMarkers"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = local.staging_control_table_arn
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["app-writers#staging#stg-*"] }
+          "ForAllValues:StringEquals" = { "dynamodb:Attributes" = [
+            "key", "session_id", "environment", "started_at", "commit_sha", "workflow_run_id"
+          ] }
+          "ForAnyValue:StringEquals" = { "dynamodb:EnclosingOperation" = ["TransactWriteItems"] }
+          Null                       = { "dynamodb:LeadingKeys" = "false" }
         }
       },
     ]
@@ -355,7 +408,7 @@ locals {
     {
       Sid       = "MaintainOnlyStagingLifecycleLease"
       Effect    = "Allow"
-      Action    = ["dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+      Action    = ["dynamodb:UpdateItem"]
       Resource  = local.staging_control_table_arn
       Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["lifecycle-lock"] }, Null = { "dynamodb:LeadingKeys" = "false" } }
     }

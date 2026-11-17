@@ -295,6 +295,9 @@ class PlatformToolsTest(unittest.TestCase):
             step["run"].index("trap cleanup_bootstrap EXIT"),
             step["run"].index("apply_secret application"),
         )
+        marker = "staging_lifecycle_lease.py mark-deployment"
+        self.assertLess(step["run"].index(marker), step["run"].index("apply_secret application"))
+        self.assertLess(step["run"].index(marker), step["run"].index("research-db-bootstrap.yaml"))
         self.assertLess(
             step["run"].index("trap cleanup_bootstrap EXIT"),
             step["run"].index('kubectl -n research create secret generic "$BOOTSTRAP_SECRET_NAME"'),

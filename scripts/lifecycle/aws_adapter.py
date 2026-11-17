@@ -783,6 +783,25 @@ class AWSAdapter:
         self.require_lease()
         self.identity()
         self.verify_retained()
+        marker_key = f"app-writers#{self.config['environment']}#{self.config['session_id']}"
+        marker = self.clients["dynamodb"].get_item(
+            TableName="deepresearch-control",
+            Key={"key": {"S": marker_key}},
+            ConsistentRead=True,
+        ).get("Item", {})
+        if marker and (
+            marker.get("key", {}).get("S") != marker_key
+            or marker.get("session_id", {}).get("S") != self.config["session_id"]
+            or marker.get("environment", {}).get("S") != self.config["environment"]
+            or not marker.get("started_at", {}).get("N")
+            or not marker.get("commit_sha", {}).get("S")
+            or not marker.get("workflow_run_id", {}).get("N")
+        ):
+            raise Refused("Could not verify durable application deployment history")
+        if marker:
+            raise Refused(
+                "Application deployment was started for this session; bootstrap cleanup is prohibited"
+            )
         try:
             cluster = self.clients["eks"].describe_cluster(name=self.config["cluster_name"])[
                 "cluster"

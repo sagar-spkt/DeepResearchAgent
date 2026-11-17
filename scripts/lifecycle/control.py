@@ -170,9 +170,11 @@ class Lease:
         item = self.store.client.get_item(
             TableName=self.store.table, Key={"key": {"S": "lifecycle-lock"}}, ConsistentRead=True
         ).get("Item", {})
-        if item.get("owner_id", {}).get("S") != self.owner or int(
-            item.get("expires_at", {}).get("N", "0")
-        ) <= int(self.store.clock()):
+        if (
+            item.get("owner_id", {}).get("S") != self.owner
+            or item.get("session_id", {}).get("S") != self.config["session_id"]
+            or int(item.get("expires_at", {}).get("N", "0")) <= int(self.store.clock())
+        ):
             self.lost.set()
             raise Refused("Lifecycle lease expired or ownership changed")
 
@@ -215,12 +217,16 @@ class Lease:
         if self.thread:
             self.thread.join(timeout=2)
         try:
-            self.store.client.delete_item(
+            self.store.client.update_item(
                 TableName=self.store.table,
                 Key={"key": {"S": "lifecycle-lock"}},
-                ConditionExpression="owner_id = :owner",
-                ExpressionAttributeValues={":owner": {"S": self.owner}},
+                UpdateExpression="REMOVE owner_id, expires_at, session_id",
+                ConditionExpression="owner_id = :owner AND session_id = :session",
+                ExpressionAttributeValues={
+                    ":owner": {"S": self.owner},
+                    ":session": {"S": self.config["session_id"]},
+                },
             )
         except Exception:
-            # Never remove another holder's lock. Admission remains active on failure.
+            # Never remove another holder's lock or erase persistent session markers.
             self.lost.set()

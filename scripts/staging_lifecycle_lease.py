@@ -36,7 +36,9 @@ def request(args, runner=subprocess.run):
     )
     if result.returncode:
         raise LeaseError("DynamoDB lifecycle lease operation failed")
-    if not result.stdout.strip() and "update-item" in args:
+    if not result.stdout.strip() and any(
+        operation in args for operation in ("update-item", "put-item", "transact-write-items")
+    ):
         return {}
     try:
         return json.loads(result.stdout)
@@ -57,6 +59,10 @@ def item(key, runner=subprocess.run):
         runner,
     )
     return result.get("Item", {})
+
+
+def deployment_marker_key(session_id):
+    return "app-writers#staging#" + validate_session_id(session_id)
 
 
 def assert_admission(session_id, runner=subprocess.run):
@@ -157,6 +163,70 @@ def renew(owner, session_id, now=None, runner=subprocess.run):
     )
 
 
+def mark_deployment_started(owner, session_id, commit_sha, workflow_run_id, now=None, runner=subprocess.run):
+    """Permanently record that this admitted session may have started app writers."""
+    session_id = validate_session_id(session_id)
+    if not isinstance(commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+        raise LeaseError("The deployment commit SHA is invalid")
+    if not isinstance(workflow_run_id, str) or not re.fullmatch(r"[0-9]+", workflow_run_id):
+        raise LeaseError("The deployment workflow run ID is invalid")
+    assert_owner(owner, session_id, now=now, runner=runner)
+    instant = int(time.time() if now is None else now)
+    start = assert_admission(session_id, runner)
+    marker_key = deployment_marker_key(session_id)
+    existing = item(marker_key, runner)
+    if existing:
+        if (
+            existing.get("key", {}).get("S") != marker_key
+            or existing.get("session_id", {}).get("S") != session_id
+            or existing.get("environment", {}).get("S") != ENVIRONMENT
+        ):
+            raise LeaseError("The durable deployment marker is malformed or belongs to another session")
+        assert_owner(owner, session_id, now=now, runner=runner)
+        return
+    record = {
+        "key": {"S": marker_key},
+        "session_id": {"S": session_id},
+        "environment": {"S": ENVIRONMENT},
+        "started_at": {"N": str(instant)},
+        "commit_sha": {"S": commit_sha},
+        "workflow_run_id": {"N": workflow_run_id},
+    }
+    deadline = start + 4 * 60 * 60
+    transaction = [
+        {
+            "ConditionCheck": {
+                "TableName": TABLE,
+                "Key": {"key": {"S": "lifecycle-lock"}},
+                "ConditionExpression": "owner_id = :owner AND session_id = :session AND expires_at > :now AND expires_at <= :deadline",
+                "ExpressionAttributeValues": {
+                    ":owner": {"S": owner},
+                    ":session": {"S": session_id},
+                    ":now": {"N": str(instant)},
+                    ":deadline": {"N": str(deadline)},
+                },
+            }
+        },
+        {
+            "Put": {
+                "TableName": TABLE,
+                "Item": record,
+                "ConditionExpression": "attribute_not_exists(#key)",
+                "ExpressionAttributeNames": {"#key": "key"},
+            }
+        },
+    ]
+    request(
+        [
+            "transact-write-items",
+            "--transact-items",
+            json.dumps(transaction),
+        ],
+        runner,
+    )
+    assert_owner(owner, session_id, now=now, runner=runner)
+
+
 def release(owner, session_id, runner=subprocess.run):
     """Release only the lock still owned by this workflow and session."""
     validate_session_id(session_id)
@@ -197,9 +267,13 @@ def write_heartbeat_status(owner_file, lost=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["acquire", "assert", "heartbeat", "release"])
+    parser.add_argument(
+        "operation", choices=["acquire", "assert", "heartbeat", "release", "mark-deployment"]
+    )
     parser.add_argument("--owner-file", type=Path, required=True)
     parser.add_argument("--session-id", required=True)
+    parser.add_argument("--commit-sha")
+    parser.add_argument("--workflow-run-id")
     parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()
     try:
@@ -215,6 +289,13 @@ def main():
                 assert_owner(owner, args.session_id)
             elif args.operation == "release":
                 release(owner, args.session_id)
+            elif args.operation == "mark-deployment":
+                mark_deployment_started(
+                    owner,
+                    args.session_id,
+                    args.commit_sha,
+                    args.workflow_run_id,
+                )
             else:
                 if not 10 <= args.interval <= 60:
                     raise LeaseError("Heartbeat interval must be 10–60 seconds")

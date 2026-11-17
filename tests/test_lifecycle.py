@@ -504,6 +504,53 @@ class CoreTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_bootstrap_cleanup_refuses_after_deployment_even_if_namespace_is_gone(self):
+        calls = []
+        marker_key = f"app-writers#staging#{CONFIG['session_id']}"
+        dynamodb = SimpleNamespace(
+            get_item=lambda **kwargs: calls.append(kwargs)
+            or {
+                "Item": {
+                    "key": {"S": marker_key},
+                    "session_id": {"S": CONFIG["session_id"]},
+                    "environment": {"S": "staging"},
+                    "started_at": {"N": "1000"},
+                    "commit_sha": {"S": "a" * 40},
+                    "workflow_run_id": {"N": "12345"},
+                }
+            }
+        )
+        adapter = AWSAdapter(CONFIG, {"dynamodb": dynamodb}, runner=lambda argv: "")
+        adapter.require_lease = lambda: None
+        adapter.identity = lambda: None
+        adapter.verify_retained = lambda: None
+
+        with self.assertRaisesRegex(Refused, "Application deployment was started"):
+            adapter.verify_bootstrap_empty()
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(marker_key, calls[0]["Key"]["key"]["S"])
+        self.assertTrue(calls[0]["ConsistentRead"])
+
+    def test_bootstrap_cleanup_fails_closed_on_malformed_deployment_marker(self):
+        marker_key = f"app-writers#staging#{CONFIG['session_id']}"
+        dynamodb = SimpleNamespace(
+            get_item=lambda **_: {
+                "Item": {
+                    "key": {"S": marker_key},
+                    "session_id": {"S": CONFIG["session_id"]},
+                    "environment": {"S": "staging"},
+                }
+            }
+        )
+        adapter = AWSAdapter(CONFIG, {"dynamodb": dynamodb}, runner=lambda argv: "")
+        adapter.require_lease = lambda: None
+        adapter.identity = lambda: None
+        adapter.verify_retained = lambda: None
+
+        with self.assertRaisesRegex(Refused, "Could not verify durable application deployment history"):
+            adapter.verify_bootstrap_empty()
+
     def test_wrong_account_rejected(self):
         adapter = AWSAdapter(
             CONFIG,

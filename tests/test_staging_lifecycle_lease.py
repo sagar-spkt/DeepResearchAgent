@@ -2,7 +2,15 @@ import json
 import subprocess
 import unittest
 
-from scripts.staging_lifecycle_lease import LeaseError, acquire, assert_owner, release, renew
+from scripts.staging_lifecycle_lease import (
+    LeaseError,
+    acquire,
+    assert_owner,
+    deployment_marker_key,
+    mark_deployment_started,
+    release,
+    renew,
+)
 
 
 class StagingLifecycleLeaseTests(unittest.TestCase):
@@ -139,8 +147,8 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
             calls.append(argv)
             if "get-item" in argv:
                 key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
-                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items[key]}), "")
-            return subprocess.CompletedProcess(argv, 0, "{}", "")
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items.get(key, {})}), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
 
         assert_owner("workflow-owner", "stg-20261116", now=1100, runner=runner)
         renew("workflow-owner", "stg-20261116", now=1100, runner=runner)
@@ -160,11 +168,125 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
         release("workflow-owner", "stg-20261116", runner=runner)
         update = calls[0]
         self.assertIn("update-item", update)
-        self.assertEqual("REMOVE owner_id, expires_at, session_id", update[update.index("--update-expression") + 1])
+        expression = update[update.index("--update-expression") + 1]
+        self.assertEqual("REMOVE owner_id, expires_at, session_id", expression)
+        self.assertNotIn("app_writer_sessions", expression)
         self.assertEqual("owner_id = :owner AND session_id = :session", update[update.index("--condition-expression") + 1])
         values = json.loads(update[update.index("--expression-attribute-values") + 1])
         self.assertEqual("workflow-owner", values[":owner"]["S"])
         self.assertEqual("stg-20261116", values[":session"]["S"])
+
+    def test_deployment_marker_is_added_only_under_the_active_session_lease(self):
+        session_id = "stg-20261117"
+        items = {
+            "active-session": {
+                "session_id": {"S": session_id},
+                "environment": {"S": "staging"},
+                "account_id": {"S": "088759500358"},
+                "started_at": {"N": "1000"},
+            },
+            "lifecycle-lock": {
+                "owner_id": {"S": "workflow-owner"},
+                "session_id": {"S": session_id},
+                "expires_at": {"N": "1200"},
+            },
+        }
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items.get(key, {})}), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        mark_deployment_started(
+            "workflow-owner", session_id, "a" * 40, "12345", now=1100, runner=runner
+        )
+
+        transaction = next(call for call in calls if "transact-write-items" in call)
+        actions = json.loads(transaction[transaction.index("--transact-items") + 1])
+        self.assertEqual(["ConditionCheck", "Put"], [next(iter(action)) for action in actions])
+        lease_check = actions[0]["ConditionCheck"]
+        self.assertEqual("lifecycle-lock", lease_check["Key"]["key"]["S"])
+        self.assertEqual(
+            "owner_id = :owner AND session_id = :session AND expires_at > :now AND expires_at <= :deadline",
+            lease_check["ConditionExpression"],
+        )
+        lease_values = lease_check["ExpressionAttributeValues"]
+        self.assertEqual("workflow-owner", lease_values[":owner"]["S"])
+        self.assertEqual(session_id, lease_values[":session"]["S"])
+        self.assertEqual("1100", lease_values[":now"]["N"])
+        self.assertEqual("15400", lease_values[":deadline"]["N"])
+        marker_put = actions[1]["Put"]
+        marker = marker_put["Item"]
+        self.assertEqual(deployment_marker_key(session_id), marker["key"]["S"])
+        self.assertEqual(session_id, marker["session_id"]["S"])
+        self.assertEqual("staging", marker["environment"]["S"])
+        self.assertEqual("1100", marker["started_at"]["N"])
+        self.assertEqual("a" * 40, marker["commit_sha"]["S"])
+        self.assertEqual("12345", marker["workflow_run_id"]["N"])
+        self.assertEqual("attribute_not_exists(#key)", marker_put["ConditionExpression"])
+
+    def test_existing_valid_deployment_marker_is_idempotent(self):
+        session_id = "stg-20261117"
+        items = {
+            "active-session": {
+                "session_id": {"S": session_id},
+                "environment": {"S": "staging"},
+                "account_id": {"S": "088759500358"},
+                "started_at": {"N": "1000"},
+            },
+            "lifecycle-lock": {
+                "owner_id": {"S": "workflow-owner"},
+                "session_id": {"S": session_id},
+                "expires_at": {"N": "1200"},
+            },
+            deployment_marker_key(session_id): {
+                "key": {"S": deployment_marker_key(session_id)},
+                "session_id": {"S": session_id},
+                "environment": {"S": "staging"},
+                "started_at": {"N": "1050"},
+                "commit_sha": {"S": "b" * 40},
+                "workflow_run_id": {"N": "10000"},
+            },
+        }
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items.get(key, {})}), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        mark_deployment_started(
+            "workflow-owner", session_id, "a" * 40, "12345", now=1100, runner=runner
+        )
+
+        self.assertFalse(any("transact-write-items" in call for call in calls))
+        self.assertEqual("b" * 40, items[deployment_marker_key(session_id)]["commit_sha"]["S"])
+
+    def test_deployment_marker_refuses_when_lease_is_not_owned(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
+                value = (
+                    {"session_id": {"S": "stg-20261117"}, "environment": {"S": "staging"}, "account_id": {"S": "088759500358"}, "started_at": {"N": "1000"}}
+                    if key == "active-session"
+                    else {"owner_id": {"S": "other-owner"}, "session_id": {"S": "stg-20261117"}, "expires_at": {"N": "1200"}}
+                )
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": value}), "")
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+        with self.assertRaisesRegex(LeaseError, "expired or changed owner"):
+            mark_deployment_started(
+                "workflow-owner", "stg-20261117", "a" * 40, "12345", now=1100, runner=runner
+            )
+        self.assertFalse(any("put-item" in call for call in calls))
 
     def test_session_id_is_validated_before_any_cloud_call(self):
         calls = []

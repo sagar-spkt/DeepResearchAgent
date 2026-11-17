@@ -132,7 +132,7 @@ run "staging_provisioning_roles_are_stack_and_session_bound" {
   }
 
   assert {
-    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["common"].policy).Statement : statement if statement.Sid == "MaintainOnlyStagingLifecycleLease"]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["lifecycle-lock"]
-    error_message = "Provisioning may delete only the lifecycle lock item, never the admission or monthly ledger."
+    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["common"].policy).Statement : statement if statement.Sid == "MaintainOnlyStagingLifecycleLease"]).Action == ["dynamodb:UpdateItem"] && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["common"].policy).Statement : statement if statement.Sid == "MaintainOnlyStagingLifecycleLease"]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["lifecycle-lock"]
+    error_message = "Provisioning may update only the lifecycle lock, never delete its persistent application deployment markers or mutate the admission/monthly ledger."
   }
 }

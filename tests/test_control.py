@@ -87,17 +87,29 @@ class FakeDynamo:
             key = kw["Key"]["key"]["S"]
             values = kw["ExpressionAttributeValues"]
             item = self.items.get(key, {})
+            if kw.get("UpdateExpression", "").startswith("REMOVE"):
+                if (
+                    item.get("owner_id") != values[":owner"]
+                    or item.get("session_id") != values[":session"]
+                ):
+                    raise ValueError("not lease owner")
+                for field in ["owner_id", "expires_at", "session_id"]:
+                    item.pop(field, None)
+                self.items[key] = item
+                return
             if ":session" in values:
                 if item.get("owner_id") and int(item["expires_at"]["N"]) >= int(
                     values[":now"]["N"]
                 ):
                     raise ValueError("lock held")
-                item = {
-                    "key": {"S": key},
-                    "owner_id": values[":owner"],
-                    "expires_at": values[":expires"],
-                    "session_id": values[":session"],
-                }
+                item.update(
+                    {
+                        "key": {"S": key},
+                        "owner_id": values[":owner"],
+                        "expires_at": values[":expires"],
+                        "session_id": values[":session"],
+                    }
+                )
             else:
                 if item.get("owner_id") != values[":owner"] or int(
                     item.get("expires_at", {}).get("N", "0")
@@ -105,14 +117,6 @@ class FakeDynamo:
                     raise ValueError("lock lost")
                 item["expires_at"] = values[":expires"]
             self.items[key] = item
-
-    def delete_item(self, **kw):
-        with self.lock:
-            key = kw["Key"]["key"]["S"]
-            if self.items.get(key, {}).get("owner_id") != kw["ExpressionAttributeValues"][":owner"]:
-                raise ValueError("not owner")
-            self.items.pop(key, None)
-
 
 class ControlTests(unittest.TestCase):
     def setUp(self):
@@ -183,8 +187,42 @@ class ControlTests(unittest.TestCase):
         first.__exit__(None, None, None)
         second.assert_owned()
         second.__exit__(None, None, None)
-        self.assertNotIn("lifecycle-lock", self.client.items)
+        self.assertEqual({"key": {"S": "lifecycle-lock"}}, self.client.items["lifecycle-lock"])
         self.assertIn("active-session", self.client.items)
+
+    def test_refused_bootstrap_cleanup_keeps_marker_for_a_retry(self):
+        self.store.reserve(CONFIG, self.clock[0])
+        first = self.store.acquire(CONFIG)
+        marker_key = "app-writers#staging#session-1"
+        self.client.items[marker_key] = {
+            "key": {"S": marker_key},
+            "session_id": {"S": "session-1"},
+            "environment": {"S": "staging"},
+            "started_at": {"N": "1000"},
+            "commit_sha": {"S": "a" * 40},
+            "workflow_run_id": {"N": "12345"},
+        }
+        first.__exit__(None, None, None)
+        self.assertFalse(first.lost.is_set())
+        self.assertEqual(
+            "session-1",
+            self.client.items[marker_key]["session_id"]["S"],
+        )
+
+        retry = self.store.acquire(CONFIG)
+        adapter = AWSAdapter(CONFIG, {"dynamodb": self.client})
+        adapter.exclusive_guard = retry.assert_owned
+        adapter.identity = lambda: None
+        adapter.verify_retained = lambda: None
+        with self.assertRaisesRegex(Refused, "Application deployment was started"):
+            adapter.verify_bootstrap_empty()
+        retry.__exit__(None, None, None)
+        self.assertFalse(retry.lost.is_set())
+
+        self.assertEqual(
+            "session-1",
+            self.client.items[marker_key]["session_id"]["S"],
+        )
 
     def test_missing_or_lost_lease_prevents_snapshot_call(self):
         adapter = AWSAdapter(CONFIG, {})
