@@ -313,6 +313,20 @@ class PlatformToolsTest(unittest.TestCase):
         self.assertIn("research-application.yaml", temp_cleanup["run"])
         self.assertIn("staging-secrets", temp_cleanup["run"])
 
+    def test_runtime_plan_reads_management_outputs_from_management_state(self):
+        workflow = json.loads((ROOT / ".github/workflows/provision-staging.yml").read_text())
+        step = next(
+            step
+            for step in workflow["jobs"]["provision"]["steps"]
+            if step.get("name") == "Create private plan or apply exact version"
+        )
+        self.assertIn('key=deepresearch/staging/management.tfstate', step["run"])
+        self.assertIn('"${management_state_args[@]}"', step["run"])
+        self.assertNotIn(
+            'terraform -chdir=infra/management init -reconfigure -input=false "${state_args[@]}"',
+            step["run"],
+        )
+
     def test_aws_lifecycle_workflows_remain_read_only_and_fail_closed(self):
         expected_operations = {
             "promote.yml": "promote",
