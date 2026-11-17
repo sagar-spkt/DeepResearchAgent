@@ -568,6 +568,13 @@ locals {
   ]
   staging_management_provisioner_statements = [
     {
+      Sid       = "ReadOnlyStagingFoundationStateForLifecycleFinalization"
+      Effect    = "Allow"
+      Action    = ["s3:GetObject"]
+      Resource  = "arn:aws:s3:::${var.staging_state_bucket}/deepresearch/staging/foundation.tfstate"
+      Condition = { Bool = { "aws:SecureTransport" = "true" } }
+    },
+    {
       Sid       = "CreateSessionTaggedManagementVpc"
       Effect    = "Allow"
       Action    = ["ec2:CreateVpc"]
@@ -720,6 +727,18 @@ locals {
   ]
   staging_management_runner_statements = [
     {
+      Sid      = "ReadOnlyThisStagingDeploymentMarker"
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem"]
+      Resource = local.staging_control_table_arn
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "dynamodb:LeadingKeys" = ["app-writers#staging#$${aws:PrincipalTag/Session}"]
+        }
+        Null = { "dynamodb:LeadingKeys" = "false" }
+      }
+    },
+    {
       Sid      = "UseExactUbuntuRunnerAMI"
       Effect   = "Allow"
       Action   = ["ec2:RunInstances"]
@@ -844,8 +863,8 @@ locals {
   ]
   staging_provisioner_policy_documents = {
     common               = jsonencode({ Version = "2012-10-17", Statement = local.staging_provisioner_common_statements })
-    "management-network" = jsonencode({ Version = "2012-10-17", Statement = slice(local.staging_management_provisioner_statements, 0, 8) })
-    "management-egress"  = jsonencode({ Version = "2012-10-17", Statement = slice(local.staging_management_provisioner_statements, 8, length(local.staging_management_provisioner_statements)) })
+    "management-network" = jsonencode({ Version = "2012-10-17", Statement = slice(local.staging_management_provisioner_statements, 0, 9) })
+    "management-egress"  = jsonencode({ Version = "2012-10-17", Statement = slice(local.staging_management_provisioner_statements, 9, length(local.staging_management_provisioner_statements)) })
     "management-runner"  = jsonencode({ Version = "2012-10-17", Statement = local.staging_management_runner_statements })
     "runtime-network"    = jsonencode({ Version = "2012-10-17", Statement = local.staging_runtime_network_statements })
     "runtime-eks"        = jsonencode({ Version = "2012-10-17", Statement = local.staging_runtime_eks_statements })

@@ -6,9 +6,12 @@ from scripts.staging_lifecycle_lease import (
     LeaseError,
     acquire,
     assert_owner,
+    acquire_finalizer,
+    assert_finalizer_owner,
     deployment_marker_key,
     mark_deployment_started,
     release,
+    renew_finalizer,
     renew,
 )
 
@@ -125,6 +128,72 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
         calls.clear()
         with self.assertRaisesRegex(LeaseError, "deadline has passed"):
             renew("near-deadline", "stg-20261116", now=15400, runner=runner)
+        self.assertFalse(any("update-item" in call for call in calls))
+
+    def test_finalizer_lease_only_runs_after_four_hours_before_reservation_expiry(self):
+        session_id = "stg-20261117"
+        items = {
+            "active-session": {
+                "session_id": {"S": session_id},
+                "environment": {"S": "staging"},
+                "account_id": {"S": "088759500358"},
+                "started_at": {"N": "1000"},
+            },
+            "lifecycle-lock": {},
+        }
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items.get(key, {})}), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        acquire_finalizer("finalizer-owner", session_id, now=15400, runner=runner)
+        update = next(call for call in calls if "update-item" in call)
+        values = json.loads(update[update.index("--expression-attribute-values") + 1])
+        self.assertEqual("15520", values[":expires"]["N"])
+
+        items["lifecycle-lock"] = {
+            "owner_id": {"S": "finalizer-owner"},
+            "session_id": {"S": session_id},
+            "expires_at": {"N": "15520"},
+        }
+        assert_finalizer_owner("finalizer-owner", session_id, now=15500, runner=runner)
+        renew_finalizer("finalizer-owner", session_id, now=15500, runner=runner)
+        self.assertEqual("15620", json.loads(calls[-1][calls[-1].index("--expression-attribute-values") + 1])[":expires"]["N"])
+
+    def test_finalizer_lease_rejects_early_expired_or_deployed_sessions(self):
+        session_id = "stg-20261117"
+        items = {
+            "active-session": {
+                "session_id": {"S": session_id},
+                "environment": {"S": "staging"},
+                "account_id": {"S": "088759500358"},
+                "started_at": {"N": "1000"},
+            }
+        }
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                key = json.loads(argv[argv.index("--key") + 1])["key"]["S"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items.get(key, {})}), "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with self.assertRaisesRegex(LeaseError, "only after the runtime deadline"):
+            acquire_finalizer("owner", session_id, now=15399, runner=runner)
+        with self.assertRaisesRegex(LeaseError, "reservation has expired"):
+            acquire_finalizer("owner", session_id, now=22600, runner=runner)
+        items[deployment_marker_key(session_id)] = {
+            "key": {"S": deployment_marker_key(session_id)},
+            "session_id": {"S": session_id},
+            "environment": {"S": "staging"},
+        }
+        with self.assertRaisesRegex(LeaseError, "deployment marker exists"):
+            acquire_finalizer("owner", session_id, now=15400, runner=runner)
         self.assertFalse(any("update-item" in call for call in calls))
 
     def test_assert_and_renew_are_bound_to_owner_and_session(self):

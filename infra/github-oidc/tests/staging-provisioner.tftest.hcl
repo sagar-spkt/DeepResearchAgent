@@ -135,4 +135,14 @@ run "staging_provisioning_roles_are_stack_and_session_bound" {
     condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["common"].policy).Statement : statement if statement.Sid == "MaintainOnlyStagingLifecycleLease"]).Action == ["dynamodb:UpdateItem"] && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["common"].policy).Statement : statement if statement.Sid == "MaintainOnlyStagingLifecycleLease"]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["lifecycle-lock"]
     error_message = "Provisioning may update only the lifecycle lock, never delete its persistent application deployment markers or mutate the admission/monthly ledger."
   }
+
+  assert {
+    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-runner"].policy).Statement : statement if statement.Sid == "ReadOnlyThisStagingDeploymentMarker"]).Action == ["dynamodb:GetItem"] && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-runner"].policy).Statement : statement if statement.Sid == "ReadOnlyThisStagingDeploymentMarker"]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["app-writers#staging#$${aws:PrincipalTag/Session}"]
+    error_message = "The management role may read only its exact session deployment marker for fail-closed finalizer checks."
+  }
+
+  assert {
+    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-network"].policy).Statement : statement if statement.Sid == "ReadOnlyStagingFoundationStateForLifecycleFinalization"]).Action == ["s3:GetObject"] && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-network"].policy).Statement : statement if statement.Sid == "ReadOnlyStagingFoundationStateForLifecycleFinalization"]).Resource == "arn:aws:s3:::${var.staging_state_bucket}/deepresearch/staging/foundation.tfstate" && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-network"].policy).Statement : statement if statement.Sid == "ReadOnlyStagingFoundationStateForLifecycleFinalization"]).Condition.Bool["aws:SecureTransport"] == "true"
+    error_message = "The management workflow may read only the private foundation state object needed to build the lifecycle release config."
+  }
 }

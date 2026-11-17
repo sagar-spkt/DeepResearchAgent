@@ -57,11 +57,13 @@ class InventoryCollector:
         clock=time.time,
         bootstrap_cleanup=False,
         bootstrap_final_required=False,
+        empty_session=False,
     ):
         self.config = validate_config(config)
         self.clients, self.clock = clients, clock
         self.bootstrap_cleanup = bootstrap_cleanup
         self.bootstrap_final_required = bootstrap_final_required
+        self.empty_session = empty_session
         self.errors, self.runtime, self.management, self.retained = [], [], [], []
         self.name = "deepresearch-" + config["environment"]
         self.cluster = config["cluster_name"]
@@ -70,6 +72,7 @@ class InventoryCollector:
         self.subnets, self.management_subnets = set(), set()
         self.instances, self.interfaces, self.management_interfaces = set(), set(), set()
         self.control_verified = False
+        self.deployment_marker_present = None
 
     def call(self, label, function, absent=()):
         try:
@@ -181,6 +184,7 @@ class InventoryCollector:
             "retained_accounted": complete,
             "runtime_remaining": self.runtime,
             "management_remaining": self.management,
+            "deployment_marker_present": self.deployment_marker_present,
             "retained_resources": self.retained,
             "errors": self.errors,
             "scope": "Enumerated deepresearch runtime/foundation/expiry resources in the selected account and region; not an account-wide zero-billing assertion",
@@ -424,6 +428,31 @@ class InventoryCollector:
         )
         self.control_verified = valid
         self.record(self.retained, "control-table", expected, billed=True)
+        if self.empty_session:
+            marker_key = f"app-writers#{self.config['environment']}#{self.config['session_id']}"
+            marker_result = self.call(
+                "control:deployment-marker",
+                lambda: client.get_item(
+                    TableName="deepresearch-control",
+                    Key={"key": {"S": marker_key}},
+                    ConsistentRead=True,
+                ),
+            )
+            marker = (marker_result or {}).get("Item", {})
+            self.deployment_marker_present = bool(marker)
+            if marker:
+                self.require(
+                    marker.get("key", {}).get("S") == marker_key
+                    and marker.get("session_id", {}).get("S") == self.config["session_id"]
+                    and marker.get("environment", {}).get("S") == self.config["environment"],
+                    "deployment-marker-identity",
+                )
+                self.record(
+                    self.runtime,
+                    "application-deployment-marker",
+                    marker_key,
+                    started_at=marker.get("started_at", {}).get("N"),
+                )
 
     def retained_volume(self, volume, value):
         intentional = (
@@ -540,7 +569,7 @@ class InventoryCollector:
             {f"{self.name}-{self.config['session_id']}-final"}
             if self.bootstrap_cleanup and self.bootstrap_final_required
             else set()
-            if self.bootstrap_cleanup
+            if self.bootstrap_cleanup or self.empty_session
             else expected
         )
         observed = set()
@@ -572,8 +601,10 @@ class InventoryCollector:
             self.record(self.retained, "rds-snapshot", snapshot["DBSnapshotArn"], billed=True)
         if self.bootstrap_cleanup:
             self.require(required.issubset(observed), "required-bootstrap-final-snapshot")
-        else:
+        elif not self.empty_session:
             self.require(observed == expected, "required-backup-and-final-snapshots")
+        elif observed:
+            self.require(False, "empty-session-has-session-snapshots")
 
     def load_balancers(self):
         client = self.clients["elbv2"]
@@ -936,9 +967,37 @@ class InventoryCollector:
                 self.record(self.retained, "expiry-iam-role", result["Role"]["Arn"], billed=False)
 
 
-def release_plan(config, instant=None, bootstrap_cleanup_plan=None, cleanup_receipt=None):
+def release_plan(
+    config,
+    instant=None,
+    bootstrap_cleanup_plan=None,
+    cleanup_receipt=None,
+    management_cleanup_receipt=None,
+):
     validate_config(config)
     instant = instant or datetime.now(timezone.utc)
+    if management_cleanup_receipt is not None:
+        if bootstrap_cleanup_plan is not None or cleanup_receipt is not None:
+            raise Refused("Empty-session closeout cannot use bootstrap cleanup evidence")
+        _validate_empty_session_cleanup_receipt(config, management_cleanup_receipt)
+        return {
+            "version": 1,
+            "operation": "empty-admission-release",
+            "config": config,
+            "created_at": instant.isoformat(),
+            "expires_at": (instant + timedelta(minutes=15)).isoformat(),
+            "management_cleanup_receipt_sha256": digest(management_cleanup_receipt),
+            "mutations": [
+                "Collect fresh complete provider inventory under the finalizer lease",
+                "Require no deployment marker, runtime resources, management resources, or session RDS snapshots",
+                "Atomically archive empty-session completion and remove only the matching admission",
+            ],
+            "retained": [
+                "No runtime or application writers were installed; backup/final snapshots are not applicable",
+                "Monthly reservation counters are never refunded",
+                "Foundation resources and any pending runner-key deletion remain accounted",
+            ],
+        }
     if (bootstrap_cleanup_plan is None) != (cleanup_receipt is None):
         raise Refused("Bootstrap closeout requires both its cleanup plan and receipt")
     if bootstrap_cleanup_plan is not None:
@@ -976,6 +1035,22 @@ def release_plan(config, instant=None, bootstrap_cleanup_plan=None, cleanup_rece
             "Explicit retained data and management resources may continue to incur charges",
         ],
     }
+
+
+def _validate_empty_session_cleanup_receipt(config, receipt):
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("operation") != "staging-management-finalizer-receipt"
+        or receipt.get("config") != config
+        or receipt.get("executed") is not True
+        or receipt.get("runner_terminated") is not True
+        or receipt.get("runner_unregistered") is not True
+        or receipt.get("runtime_verified_absent") is not True
+        or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("terraform_destroy_plan_sha256", ""))
+        or not re.fullmatch(r"[0-9a-f]{40}", receipt.get("commit_sha", ""))
+        or not re.fullmatch(r"[0-9]+", str(receipt.get("workflow_run_id", "")))
+    ):
+        raise Refused("Not a verified, session-bound management finalizer receipt")
 
 
 def _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt):
@@ -1031,7 +1106,15 @@ def _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt):
 
 
 def release_admission(
-    store, config, lease, clients, plan, approved_hash, cleanup_plan=None, cleanup_receipt=None
+    store,
+    config,
+    lease,
+    clients,
+    plan,
+    approved_hash,
+    cleanup_plan=None,
+    cleanup_receipt=None,
+    management_cleanup_receipt=None,
 ):
     """Collect fresh provider truth, then archive+release atomically. Never refund time.
 
@@ -1042,9 +1125,12 @@ def release_admission(
     validate_config(config)
     approve(plan, approved_hash, datetime.fromtimestamp(store.clock(), timezone.utc))
     operation = plan.get("operation")
-    if operation not in {"release", "bootstrap-release"} or plan.get("config") != config:
+    if operation not in {"release", "bootstrap-release", "empty-admission-release"} or plan.get(
+        "config"
+    ) != config:
         raise Refused("Not an approved matching admission-release plan")
     bootstrap_release = operation == "bootstrap-release"
+    empty_session_release = operation == "empty-admission-release"
     if bootstrap_release:
         _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt)
         if (
@@ -1052,7 +1138,17 @@ def release_admission(
             or plan.get("bootstrap_cleanup_receipt_sha256") != digest(cleanup_receipt)
         ):
             raise Refused("Bootstrap release plan evidence hashes do not match the supplied artifacts")
-    elif cleanup_plan is not None or cleanup_receipt is not None:
+    elif empty_session_release:
+        _validate_empty_session_cleanup_receipt(config, management_cleanup_receipt)
+        if plan.get("management_cleanup_receipt_sha256") != digest(management_cleanup_receipt):
+            raise Refused("Management cleanup receipt does not match the release plan")
+        if cleanup_plan is not None or cleanup_receipt is not None:
+            raise Refused("Empty-session closeout cannot accept bootstrap cleanup evidence")
+    elif (
+        cleanup_plan is not None
+        or cleanup_receipt is not None
+        or management_cleanup_receipt is not None
+    ):
         raise Refused("Standard release does not accept bootstrap cleanup evidence")
     if lease.store is not store or lease.config != config:
         raise Refused("Release lease/config mismatch")
@@ -1064,8 +1160,19 @@ def release_admission(
         clock=store.clock,
         bootstrap_cleanup=bootstrap_release,
         bootstrap_final_required=bootstrap_release,
+        empty_session=empty_session_release,
     ).collect()
     lease.assert_owned()
+    if empty_session_release and (
+        evidence["deployment_marker_present"] is not False
+        or any(item["kind"] == "rds-snapshot" for item in evidence["retained_resources"])
+        or any(
+            item["kind"].startswith("expiry-") for item in evidence["retained_resources"]
+        )
+    ):
+        raise Refused(
+            "Empty-session closeout requires no deployment marker or session RDS snapshots and no expiry resources; admission retained"
+        )
     if not (
         evidence["inventory_complete"]
         and evidence["runtime_gone"]
@@ -1095,6 +1202,10 @@ def release_admission(
         completion["closeout_mode"] = "first-provision-bootstrap-cleanup"
         completion["bootstrap_cleanup_plan_sha256"] = digest(cleanup_plan)
         completion["bootstrap_cleanup_receipt_sha256"] = digest(cleanup_receipt)
+    elif empty_session_release:
+        completion["closeout_mode"] = "empty-session-no-runtime-or-writers"
+        completion["data_preservation"] = "not-applicable-no-runtime-or-writers"
+        completion["management_cleanup_receipt_sha256"] = digest(management_cleanup_receipt)
     if len(canonical(completion)) > 300_000:
         raise Refused("Completion evidence exceeds safe DynamoDB item size; admission retained")
     key = "completion#" + config["environment"] + "#" + config["session_id"]

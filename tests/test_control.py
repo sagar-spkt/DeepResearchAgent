@@ -296,6 +296,81 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(2, platform_lifecycle.main())
             self.assertFalse(receipt.exists())
 
+    def test_empty_admission_release_plan_binds_finalizer_receipt(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        import platform_lifecycle
+        from lifecycle.core import digest
+
+        finalizer_receipt = {
+            "operation": "staging-management-finalizer-receipt",
+            "config": CONFIG,
+            "executed": True,
+            "runner_terminated": True,
+            "runner_unregistered": True,
+            "runtime_verified_absent": True,
+            "terraform_destroy_plan_sha256": "a" * 64,
+            "commit_sha": "b" * 40,
+            "workflow_run_id": "12345",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.json"
+            receipt_path = root / "management-cleanup-receipt.json"
+            output = root / "empty-release-plan.json"
+            config_path.write_text(json.dumps(CONFIG))
+            receipt_path.write_text(json.dumps(finalizer_receipt))
+            argv = [
+                "platform_lifecycle.py",
+                "plan-release",
+                "--config",
+                str(config_path),
+                "--management-cleanup-receipt",
+                str(receipt_path),
+                "--output",
+                str(output),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    platform_lifecycle, "adapter", side_effect=AssertionError("no clients")
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(0, platform_lifecycle.main())
+            plan = json.loads(output.read_text())
+            self.assertEqual("empty-admission-release", plan["operation"])
+            self.assertEqual(
+                digest(finalizer_receipt), plan["management_cleanup_receipt_sha256"]
+            )
+
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "platform_lifecycle.py",
+                        "release",
+                        "--plan",
+                        str(output),
+                        "--approved-plan-hash",
+                        digest(plan),
+                        "--execute",
+                        "--output",
+                        str(root / "completion.json"),
+                    ],
+                ),
+                patch.object(
+                    platform_lifecycle, "adapter", side_effect=AssertionError("no clients")
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(2, platform_lifecycle.main())
+
     def test_bootstrap_release_plan_binds_exact_cleanup_plan_and_receipt(self):
         import contextlib
         import hashlib

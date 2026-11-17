@@ -98,6 +98,7 @@ def main():
     p.add_argument("--runtime-state-bucket")
     p.add_argument("--runtime-backend", type=Path)
     p.add_argument("--bootstrap-cleanup-plan", type=Path)
+    p.add_argument("--management-cleanup-receipt", type=Path)
     p.add_argument("--environment", choices=["staging", "production"])
     p.add_argument("--execute", action="store_true")
     args = p.parse_args()
@@ -134,7 +135,11 @@ def main():
                 "admit": "admission",
             }.get(args.operation)
             if args.operation == "release":
-                if plan.get("operation") not in {"release", "bootstrap-release"}:
+                if plan.get("operation") not in {
+                    "release",
+                    "bootstrap-release",
+                    "empty-admission-release",
+                }:
                     raise Refused("Command operation does not match the approved plan")
             elif plan.get("operation") != expected_operation:
                 raise Refused("Command operation does not match the approved plan")
@@ -157,6 +162,20 @@ def main():
                     )
             elif args.bootstrap_cleanup_plan:
                 raise Refused("--bootstrap-cleanup-plan is only valid for bootstrap release")
+            management_cleanup_receipt = None
+            if plan.get("operation") == "empty-admission-release":
+                if not args.management_cleanup_receipt:
+                    raise Refused("Empty-session release requires --management-cleanup-receipt")
+                management_cleanup_receipt = load(args.management_cleanup_receipt)
+                from lifecycle.inventory import _validate_empty_session_cleanup_receipt
+
+                _validate_empty_session_cleanup_receipt(plan["config"], management_cleanup_receipt)
+                if plan.get("management_cleanup_receipt_sha256") != digest(
+                    management_cleanup_receipt
+                ):
+                    raise Refused("Management cleanup receipt does not match the approved release plan")
+            elif args.management_cleanup_receipt:
+                raise Refused("--management-cleanup-receipt is only valid for empty-session release")
             restore_receipt = None
             if args.operation == "database-restore":
                 if not args.receipt:
@@ -209,6 +228,7 @@ def main():
                         args.approved_plan_hash,
                         cleanup_plan=cleanup_plan,
                         cleanup_receipt=cleanup_receipt,
+                        management_cleanup_receipt=management_cleanup_receipt,
                     )
                 elif args.operation == "expiry":
                     result = execute_expiry(
@@ -243,12 +263,21 @@ def main():
                     raise Refused(
                         "Bootstrap release planning requires both --bootstrap-cleanup-plan and --receipt"
                     )
+                if args.management_cleanup_receipt and (
+                    args.bootstrap_cleanup_plan or args.receipt
+                ):
+                    raise Refused("Empty-session and bootstrap cleanup evidence cannot be combined")
                 result = release_plan(
                     config,
                     bootstrap_cleanup_plan=(
                         load(args.bootstrap_cleanup_plan) if args.bootstrap_cleanup_plan else None
                     ),
                     cleanup_receipt=load(args.receipt) if args.receipt else None,
+                    management_cleanup_receipt=(
+                        load(args.management_cleanup_receipt)
+                        if args.management_cleanup_receipt
+                        else None
+                    ),
                 )
             elif args.operation == "inventory":
                 if config is None:

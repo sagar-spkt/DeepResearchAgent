@@ -15,6 +15,8 @@ REGION = "us-east-1"
 ENVIRONMENT = "staging"
 ACCOUNT_ID = "088759500358"
 LEASE_SECONDS = 120
+RUNTIME_SECONDS = 4 * 60 * 60
+RESERVATION_SECONDS = 6 * 60 * 60
 
 
 class LeaseError(RuntimeError):
@@ -85,7 +87,7 @@ def acquire(owner, session_id, now=None, runner=subprocess.run):
     session_id = validate_session_id(session_id)
     start = assert_admission(session_id, runner)
     instant = int(time.time() if now is None else now)
-    deadline = start + 4 * 60 * 60
+    deadline = start + RUNTIME_SECONDS
     if instant >= deadline:
         raise LeaseError("The staging runtime deadline has passed")
     request(
@@ -118,7 +120,7 @@ def assert_owner(owner, session_id, now=None, runner=subprocess.run):
     start = assert_admission(session_id, runner)
     current = item("lifecycle-lock", runner)
     instant = int(time.time() if now is None else now)
-    deadline = start + 4 * 60 * 60
+    deadline = start + RUNTIME_SECONDS
     expires = int(current.get("expires_at", {}).get("N", "0"))
     if (
         instant >= deadline
@@ -134,7 +136,7 @@ def renew(owner, session_id, now=None, runner=subprocess.run):
     session_id = validate_session_id(session_id)
     start = assert_admission(session_id, runner)
     instant = int(time.time() if now is None else now)
-    deadline = start + 4 * 60 * 60
+    deadline = start + RUNTIME_SECONDS
     if instant >= deadline:
         raise LeaseError("The staging runtime deadline has passed")
     request(
@@ -155,6 +157,102 @@ def renew(owner, session_id, now=None, runner=subprocess.run):
                     ":session": {"S": session_id},
                     ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
                     ":now": {"N": str(instant)},
+                    ":deadline": {"N": str(deadline)},
+                }
+            ),
+        ],
+        runner,
+    )
+
+
+def assert_finalizer_window(start, instant):
+    runtime_deadline = start + RUNTIME_SECONDS
+    reservation_deadline = start + RESERVATION_SECONDS
+    if instant < runtime_deadline:
+        raise LeaseError("The staging finalizer may start only after the runtime deadline")
+    if instant >= reservation_deadline:
+        raise LeaseError("The staging admission reservation has expired")
+    return reservation_deadline
+
+
+def assert_no_deployment_marker(session_id, runner=subprocess.run):
+    if item(deployment_marker_key(session_id), runner):
+        raise LeaseError("A deployment marker exists; use the backup and shutdown path")
+
+
+def acquire_finalizer(owner, session_id, now=None, runner=subprocess.run):
+    """Acquire the session lease for post-deadline empty-session finalization only."""
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
+    instant = int(time.time() if now is None else now)
+    deadline = assert_finalizer_window(start, instant)
+    assert_no_deployment_marker(session_id, runner)
+    request(
+        [
+            "update-item",
+            "--table-name",
+            TABLE,
+            "--key",
+            json.dumps({"key": {"S": "lifecycle-lock"}}),
+            "--update-expression",
+            "SET owner_id = :owner, expires_at = :expires, session_id = :session",
+            "--condition-expression",
+            "attribute_not_exists(owner_id) OR expires_at < :now",
+            "--expression-attribute-values",
+            json.dumps(
+                {
+                    ":owner": {"S": owner},
+                    ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
+                    ":session": {"S": session_id},
+                    ":now": {"N": str(instant)},
+                }
+            ),
+        ],
+        runner,
+    )
+
+
+def assert_finalizer_owner(owner, session_id, now=None, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
+    instant = int(time.time() if now is None else now)
+    deadline = assert_finalizer_window(start, instant)
+    assert_no_deployment_marker(session_id, runner)
+    current = item("lifecycle-lock", runner)
+    expires = int(current.get("expires_at", {}).get("N", "0"))
+    if (
+        current.get("owner_id", {}).get("S") != owner
+        or current.get("session_id", {}).get("S") != session_id
+        or expires <= instant
+        or expires > deadline
+    ):
+        raise LeaseError("The staging finalizer lease expired or changed owner")
+
+
+def renew_finalizer(owner, session_id, now=None, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
+    instant = int(time.time() if now is None else now)
+    deadline = assert_finalizer_window(start, instant)
+    assert_finalizer_owner(owner, session_id, now=instant, runner=runner)
+    request(
+        [
+            "update-item",
+            "--table-name",
+            TABLE,
+            "--key",
+            json.dumps({"key": {"S": "lifecycle-lock"}}),
+            "--update-expression",
+            "SET expires_at = :expires",
+            "--condition-expression",
+            "owner_id = :owner AND session_id = :session AND expires_at > :now AND expires_at <= :deadline",
+            "--expression-attribute-values",
+            json.dumps(
+                {
+                    ":owner": {"S": owner},
+                    ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
+                    ":now": {"N": str(instant)},
+                    ":session": {"S": session_id},
                     ":deadline": {"N": str(deadline)},
                 }
             ),
@@ -268,7 +366,17 @@ def write_heartbeat_status(owner_file, lost=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=["acquire", "assert", "heartbeat", "release", "mark-deployment"]
+        "operation",
+        choices=[
+            "acquire",
+            "assert",
+            "heartbeat",
+            "release",
+            "mark-deployment",
+            "acquire-finalizer",
+            "assert-finalizer",
+            "heartbeat-finalizer",
+        ],
     )
     parser.add_argument("--owner-file", type=Path, required=True)
     parser.add_argument("--session-id", required=True)
@@ -283,10 +391,18 @@ def main():
             descriptor = os.open(args.owner_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w") as target:
                 target.write(owner + "\n")
+        elif args.operation == "acquire-finalizer":
+            owner = str(uuid4())
+            acquire_finalizer(owner, args.session_id)
+            descriptor = os.open(args.owner_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as target:
+                target.write(owner + "\n")
         else:
             owner = read_owner(args.owner_file)
             if args.operation == "assert":
                 assert_owner(owner, args.session_id)
+            elif args.operation == "assert-finalizer":
+                assert_finalizer_owner(owner, args.session_id)
             elif args.operation == "release":
                 release(owner, args.session_id)
             elif args.operation == "mark-deployment":
@@ -301,7 +417,10 @@ def main():
                     raise LeaseError("Heartbeat interval must be 10–60 seconds")
                 while True:
                     try:
-                        renew(owner, args.session_id)
+                        if args.operation == "heartbeat-finalizer":
+                            renew_finalizer(owner, args.session_id)
+                        else:
+                            renew(owner, args.session_id)
                         write_heartbeat_status(args.owner_file)
                     except LeaseError:
                         write_heartbeat_status(args.owner_file, lost=True)

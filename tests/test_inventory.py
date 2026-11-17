@@ -1,4 +1,5 @@
 import copy
+import json
 import sys
 import threading
 import unittest
@@ -118,6 +119,8 @@ class FakeClient:
                         {"Key": "Component", "Value": "control"},
                     ]
                 }
+            if operation == "get_item":
+                return {"Item": {}}
             if operation == "list_tags_for_resource":
                 return {"Tags": [{"Key": k, "Value": v} for k, v in TAGS.items()]}
             if operation == "get_item":
@@ -754,6 +757,19 @@ class ReleaseTests(unittest.TestCase):
         plan = release_plan(CONFIG, datetime.fromtimestamp(self.clock[0], timezone.utc))
         return release_admission(self.store, CONFIG, self.lease, self.clients, plan, digest(plan))
 
+    def empty_management_receipt(self):
+        return {
+            "operation": "staging-management-finalizer-receipt",
+            "config": CONFIG,
+            "executed": True,
+            "runner_terminated": True,
+            "runner_unregistered": True,
+            "runtime_verified_absent": True,
+            "terraform_destroy_plan_sha256": "a" * 64,
+            "commit_sha": "b" * 40,
+            "workflow_run_id": "12345",
+        }
+
     def test_release_collects_fresh_provider_truth_archives_and_never_refunds(self):
         result = self.release()
         self.assertTrue(result["admission_released"])
@@ -761,6 +777,118 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("completion#staging#session-1", self.db.items)
         self.assertEqual("21600", self.db.items["month#2026-11"]["reserved_seconds"]["N"])
         self.assertTrue(self.fixtures["calls"])
+
+    def test_empty_session_release_needs_no_fictitious_rds_snapshots(self):
+        receipt = self.empty_management_receipt()
+        self.fixtures["pages"][("rds", "describe_db_snapshots")] = []
+        self.fixtures["direct"][("sqs", "get_queue_url")] = None
+        plan = release_plan(
+            CONFIG,
+            datetime.fromtimestamp(self.clock[0], timezone.utc),
+            management_cleanup_receipt=receipt,
+        )
+
+        result = release_admission(
+            self.store,
+            CONFIG,
+            self.lease,
+            self.clients,
+            plan,
+            digest(plan),
+            management_cleanup_receipt=receipt,
+        )
+
+        self.assertEqual("empty-admission-release", plan["operation"])
+        self.assertTrue(result["admission_released"])
+        completion = json.loads(self.db.items["completion#staging#session-1"]["receipt_json"]["S"])
+        self.assertEqual("empty-session-no-runtime-or-writers", completion["closeout_mode"])
+        self.assertEqual("not-applicable-no-runtime-or-writers", completion["data_preservation"])
+        self.assertFalse(result["time_refunded"])
+        self.assertEqual("21600", self.db.items["month#2026-11"]["reserved_seconds"]["N"])
+
+    def test_empty_session_release_refuses_marker_snapshots_or_management_resources(self):
+        receipt = self.empty_management_receipt()
+        plan = release_plan(
+            CONFIG,
+            datetime.fromtimestamp(self.clock[0], timezone.utc),
+            management_cleanup_receipt=receipt,
+        )
+        self.fixtures["direct"][("dynamodb", "get_item")] = lambda kwargs: (
+            {"Item": {"key": {"S": "app-writers#staging#session-1"}, "session_id": {"S": "session-1"}, "environment": {"S": "staging"}}}
+            if kwargs["Key"]["key"]["S"] == "app-writers#staging#session-1"
+            else {"Item": {}}
+        )
+
+        with self.assertRaisesRegex(Refused, "no deployment marker"):
+            release_admission(
+                self.store,
+                CONFIG,
+                self.lease,
+                self.clients,
+                plan,
+                digest(plan),
+                management_cleanup_receipt=receipt,
+            )
+        self.assertIn("active-session", self.db.items)
+        self.assertEqual([], self.db.transactions)
+
+        self.fixtures["direct"].pop(("dynamodb", "get_item"))
+        self.fixtures["pages"][("rds", "describe_db_snapshots")] = []
+        self.fixtures["direct"][("sqs", "get_queue_url")] = None
+        self.fixtures["pages"][("ec2", "describe_vpcs")] = [
+            {
+                "VpcId": "vpc-management",
+                "State": "available",
+                "CidrBlock": "10.70.0.0/16",
+                "Tags": [
+                    {"Key": "Project", "Value": "deepresearch"},
+                    {"Key": "Environment", "Value": "staging"},
+                    {"Key": "Session", "Value": CONFIG["session_id"]},
+                    {"Key": "Component", "Value": "management-network"},
+                ],
+            }
+        ]
+        with self.assertRaisesRegex(Refused, "runtime/management resources remain"):
+            release_admission(
+                self.store,
+                CONFIG,
+                self.lease,
+                self.clients,
+                plan,
+                digest(plan),
+                management_cleanup_receipt=receipt,
+            )
+        self.assertIn("active-session", self.db.items)
+
+    def test_empty_session_release_refuses_session_snapshots(self):
+        receipt = self.empty_management_receipt()
+        plan = release_plan(
+            CONFIG,
+            datetime.fromtimestamp(self.clock[0], timezone.utc),
+            management_cleanup_receipt=receipt,
+        )
+        self.fixtures["direct"][("sqs", "get_queue_url")] = None
+        with self.assertRaisesRegex(Refused, "no deployment marker or session RDS snapshots"):
+            release_admission(
+                self.store,
+                CONFIG,
+                self.lease,
+                self.clients,
+                plan,
+                digest(plan),
+                management_cleanup_receipt=receipt,
+            )
+        self.assertIn("active-session", self.db.items)
+
+    def test_empty_session_release_requires_exact_management_cleanup_receipt(self):
+        receipt = self.empty_management_receipt()
+        receipt["runtime_verified_absent"] = False
+        with self.assertRaisesRegex(Refused, "finalizer receipt"):
+            release_plan(
+                CONFIG,
+                datetime.fromtimestamp(self.clock[0], timezone.utc),
+                management_cleanup_receipt=receipt,
+            )
 
     def bootstrap_evidence(self, directory, *, legacy_config=False):
         import hashlib

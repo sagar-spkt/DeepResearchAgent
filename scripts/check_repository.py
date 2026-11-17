@@ -91,6 +91,10 @@ def check(root=ROOT):
                                 and job_name == "provision"
                             )
                             and job_permissions == {"contents": "read", "id-token": "write"}
+                            or relative == ".github/workflows/finalize-staging.yml"
+                            and job_name == "finalize"
+                            and job_permissions
+                            == {"contents": "read", "id-token": "write"}
                         ):
                             errors.append(
                                 f"{relative}: job {job_name} has permissions outside its approved scope"

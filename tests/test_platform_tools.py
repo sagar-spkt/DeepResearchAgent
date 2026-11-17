@@ -330,6 +330,36 @@ class PlatformToolsTest(unittest.TestCase):
             step["run"],
         )
 
+    def test_empty_session_finalizer_is_hosted_manual_delete_only_and_receipt_bound(self):
+        workflow = json.loads((ROOT / ".github/workflows/finalize-staging.yml").read_text())
+        self.assertEqual({"workflow_dispatch"}, set(workflow["on"]))
+        self.assertEqual("deepresearch-aws-lifecycle", workflow["concurrency"]["group"])
+        job = workflow["jobs"]["finalize"]
+        self.assertEqual("ubuntu-24.04", job["runs-on"])
+        self.assertEqual("staging", job["environment"])
+        self.assertEqual("write", job["permissions"]["id-token"])
+        self.assertNotIn("actions", job["permissions"])
+        steps = job["steps"]
+        commands = "\n".join(step.get("run", "") for step in steps)
+        self.assertIn("I AUTHORIZE STAGING MANAGEMENT FINALIZATION", commands)
+        self.assertIn("acquire-finalizer", commands)
+        self.assertIn("assert-finalizer", commands)
+        self.assertIn("deployment marker exists", commands)
+        self.assertIn("plan -destroy", commands)
+        self.assertIn("scripts/validate_management_finalizer_plan.py", commands)
+        self.assertIn("apply -input=false", commands)
+        self.assertIn("runtime_verified_absent", commands)
+        self.assertIn("staging-management-finalizer-receipt", commands)
+        self.assertIn("runner-key-arn", commands)
+        self.assertNotIn("infra/foundation", commands)
+        self.assertLess(
+            next(i for i, step in enumerate(steps) if step.get("name") == "Assume the session-scoped management role"),
+            next(i for i, step in enumerate(steps) if step.get("name") == "Acquire finalizer lease and verify the session is empty"),
+        )
+        self.assertIn('test "$UNREGISTERED_RUNNER" = "staging-$SESSION_ID"', commands)
+        self.assertNotIn("infra/runtime", commands)
+        self.assertNotIn("aws_db_instance", commands)
+
     def test_aws_lifecycle_workflows_remain_read_only_and_fail_closed(self):
         expected_operations = {
             "promote.yml": "promote",
