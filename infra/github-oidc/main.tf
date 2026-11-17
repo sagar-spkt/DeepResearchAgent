@@ -728,8 +728,8 @@ locals {
       Sid       = "PassOnlyStagingRunnerRoleToEC2"
       Effect    = "Allow"
       Action    = ["iam:PassRole"]
-      Resource  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-*"
-      Condition = { StringEquals = merge(local.staging_session_resource_tags, { "iam:PassedToService" = "ec2.amazonaws.com" }) }
+      Resource  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-management-$${aws:PrincipalTag/Session}-runner"
+      Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
     },
     {
       Sid       = "CreateSessionTaggedRunnerTokenKey"
