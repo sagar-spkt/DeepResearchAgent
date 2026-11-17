@@ -189,9 +189,9 @@ class InventoryCollector:
 
     def runner_token_key(self):
         """Inventory the optional management runner key so closeout cannot miss billing."""
-        key_arn = self.config.get("runner_token_kms_key_arn")
-        if not key_arn:
+        if not self.config["github_runner_enabled"]:
             return
+        key_arn = self.config["runner_token_kms_key_arn"]
         result = self.call(
             "kms:runner-token-key",
             lambda: self.clients["kms"].describe_key(KeyId=key_arn),

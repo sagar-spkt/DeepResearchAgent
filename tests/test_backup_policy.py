@@ -19,6 +19,7 @@ CONFIG = {
     "backup_bucket": "deepresearch-staging-backups-123456789012",
     "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
     "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+    "github_runner_enabled": False,
 }
 
 
@@ -121,7 +122,7 @@ class BackupPolicyTests(unittest.TestCase):
 
     def test_runner_kms_inventory_permission_is_exact_and_optional(self):
         key_arn = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222"
-        policy = backup_policy({**CONFIG, "runner_token_kms_key_arn": key_arn})
+        policy = backup_policy({**CONFIG, "github_runner_enabled": True, "runner_token_kms_key_arn": key_arn})
         self.assertTrue(permits(policy, "kms:DescribeKey", key_arn))
         self.assertTrue(permits(policy, "kms:ListResourceTags", key_arn))
         self.assertFalse(permits(policy, "kms:DescribeKey", key_arn.replace("123456789012", "999999999999")))

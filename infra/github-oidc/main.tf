@@ -34,7 +34,7 @@ resource "aws_iam_role" "github_actions" {
   for_each = local.environments
 
   name                 = "deepresearch-${each.value}-github-oidc"
-  description          = "GitHub Actions OIDC trust for DeepResearchAgent ${each.value}; permissions intentionally unset"
+  description          = each.value == "staging" ? "GitHub Actions OIDC trust for DeepResearchAgent staging deploy and lifecycle lease" : "GitHub Actions OIDC trust for DeepResearchAgent production; no AWS permissions"
   max_session_duration = 3600
 
   assume_role_policy = jsonencode({
@@ -74,8 +74,11 @@ resource "aws_iam_role_policy_attachments_exclusive" "github_actions" {
 resource "aws_iam_role_policies_exclusive" "github_actions" {
   for_each = local.environments
 
-  role_name    = aws_iam_role.github_actions[each.key].name
-  policy_names = each.key == "staging" ? [aws_iam_role_policy.staging_deploy.name] : []
+  role_name = aws_iam_role.github_actions[each.key].name
+  policy_names = each.key == "staging" ? [
+    aws_iam_role_policy.staging_deploy.name,
+    aws_iam_role_policy.staging_lifecycle_lease.name,
+  ] : []
 
   lifecycle {
     prevent_destroy = true
@@ -154,8 +157,22 @@ resource "aws_iam_role_policy" "staging_deploy" {
         Action   = ["route53:GetChange"]
         Resource = "arn:aws:route53:::change/*"
       },
+    ]
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy" "staging_lifecycle_lease" {
+  name = "deepresearch-staging-lifecycle-lease"
+  role = aws_iam_role.github_actions["staging"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
       {
-        Sid      = "ReadActiveStagingAdmissionAndLease"
+        Sid      = "ReadStagingAdmissionAndLifecycleLease"
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
         Resource = local.staging_control_table_arn
@@ -204,6 +221,6 @@ import {
 }
 
 output "role_arns" {
-  description = "GitHub OIDC trust roles, with no AWS permissions attached."
+  description = "GitHub OIDC trust role ARNs. The staging role has only the reviewed deployment and lease policy; production has no permissions."
   value       = { for environment, role in aws_iam_role.github_actions : environment => role.arn }
 }

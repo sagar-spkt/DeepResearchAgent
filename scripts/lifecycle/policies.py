@@ -45,7 +45,7 @@ def backup_policy(config):
     ])
     allow("VerifyAlertTopic", ["sns:GetTopicAttributes"], [config["alert_topic_arn"]])
     allow("VerifyAlertKey", ["kms:DescribeKey", "kms:ListResourceTags", "kms:GetKeyRotationStatus"], [config["alert_kms_key_arn"]])
-    if config.get("runner_token_kms_key_arn"):
+    if config["github_runner_enabled"]:
         allow(
             "VerifyRunnerTokenKey",
             ["kms:DescribeKey", "kms:ListResourceTags"],

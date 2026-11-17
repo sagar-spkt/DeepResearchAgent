@@ -25,6 +25,7 @@ CONFIG = {
     "user_pool_id": "us-east-1_pool123",
     "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
     "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+    "github_runner_enabled": False,
 }
 TAGS = {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"}
 KEYS = {
@@ -389,7 +390,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_runner_token_key_blocks_closeout_until_scheduled_for_deletion(self):
         runner_key = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222"
-        config = {**CONFIG, "runner_token_kms_key_arn": runner_key}
+        config = {**CONFIG, "github_runner_enabled": True, "runner_token_kms_key_arn": runner_key}
         runner_state = ["PendingDeletion"]
 
         def describe_key(kwargs):

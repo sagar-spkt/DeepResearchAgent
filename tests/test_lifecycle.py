@@ -36,6 +36,7 @@ CONFIG = {
     "user_pool_id": "us-east-1_pool123",
     "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
     "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+    "github_runner_enabled": False,
     "operator_principal_arn": "arn:aws:iam::123456789012:user/research-operator",
 }
 
@@ -981,15 +982,31 @@ class ScopeRegressionTests(unittest.TestCase):
                 "alert_kms_key_arn",
                 "arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111",
             ),
-            (
-                "runner_token_kms_key_arn",
-                "arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222",
-            ),
         ):
             with self.subTest(key=key):
                 changed = {**CONFIG, key: value}
                 with self.assertRaises(Refused):
                     validate_config(changed)
+
+    def test_runner_lifecycle_config_requires_explicit_key_scope(self):
+        from lifecycle.core import validate_config
+
+        without_runner_state = {key: value for key, value in CONFIG.items() if key != "github_runner_enabled"}
+        with self.assertRaises(Refused):
+            validate_config(without_runner_state)
+        with self.assertRaises(Refused):
+            validate_config({**CONFIG, "github_runner_enabled": True})
+        with self.assertRaises(Refused):
+            validate_config({
+                **CONFIG,
+                "github_runner_enabled": True,
+                "runner_token_kms_key_arn": "arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222",
+            })
+        with self.assertRaises(Refused):
+            validate_config({
+                **CONFIG,
+                "runner_token_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222",
+            })
 
     def test_generation_change_or_replacement_requires_new_backup(self):
         generation = 5

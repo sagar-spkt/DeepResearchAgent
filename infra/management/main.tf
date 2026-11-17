@@ -185,6 +185,48 @@ locals {
     Project   = "deepresearch", Environment = var.environment, Session = var.session_id,
     Component = "github-actions-runner", ManagedBy = "terraform"
   }
+  runner_assume_policy = {
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  }
+  runner_policy_document = local.runner_instance_enabled ? {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = local.runner_parameter_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = aws_kms_key.runner_token[0].arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService"                      = "ssm.${var.region}.amazonaws.com"
+            "kms:EncryptionContext:PARAMETER_ARN" = local.runner_parameter_arn
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:TerminateInstances"]
+        Resource = "arn:aws:ec2:${var.region}:${var.account_id}:instance/*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/Project"     = "deepresearch"
+            "ec2:ResourceTag/Component"   = "github-actions-runner"
+            "ec2:ResourceTag/Session"     = var.session_id
+            "ec2:ResourceTag/Environment" = var.environment
+          }
+        }
+      }
+    ]
+  } : null
 }
 
 resource "aws_kms_key" "runner_token" {
@@ -197,66 +239,16 @@ resource "aws_kms_key" "runner_token" {
   }
 }
 
-data "aws_iam_policy_document" "runner_assume" {
-  count = local.runner_instance_enabled ? 1 : 0
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
-    }
-  }
-}
 resource "aws_iam_role" "runner" {
   count              = local.runner_instance_enabled ? 1 : 0
   name               = "${local.name}-runner"
-  assume_role_policy = data.aws_iam_policy_document.runner_assume[0].json
+  assume_role_policy = jsonencode(local.runner_assume_policy)
   tags               = local.runner_tags
-}
-data "aws_iam_policy_document" "runner" {
-  count = local.runner_instance_enabled ? 1 : 0
-  statement {
-    actions   = ["ssm:GetParameter", "ssm:DeleteParameter"]
-    resources = [local.runner_parameter_arn]
-  }
-  statement {
-    actions   = ["kms:Decrypt"]
-    resources = [aws_kms_key.runner_token[0].arn]
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["ssm.${var.region}.amazonaws.com"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:PARAMETER_ARN"
-      values   = [local.runner_parameter_arn]
-    }
-  }
-  statement {
-    actions   = ["ec2:TerminateInstances"]
-    resources = ["arn:aws:ec2:${var.region}:${var.account_id}:instance/*"]
-    condition {
-      test     = "StringEquals"
-      variable = "ec2:ResourceTag/Component"
-      values   = ["github-actions-runner"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "ec2:ResourceTag/Session"
-      values   = [var.session_id]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "ec2:ResourceTag/Environment"
-      values   = [var.environment]
-    }
-  }
 }
 resource "aws_iam_role_policy" "runner" {
   count  = local.runner_instance_enabled ? 1 : 0
   role   = aws_iam_role.runner[0].id
-  policy = data.aws_iam_policy_document.runner[0].json
+  policy = jsonencode(local.runner_policy_document)
 }
 resource "aws_iam_instance_profile" "runner" {
   count = local.runner_instance_enabled ? 1 : 0

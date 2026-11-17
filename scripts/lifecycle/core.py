@@ -55,11 +55,14 @@ def validate_config(config):
         "user_pool_id",
         "alert_topic_arn",
         "alert_kms_key_arn",
+        "github_runner_enabled",
     }
     if not expected.issubset(config):
         raise Refused("Missing configuration: " + ", ".join(sorted(expected - config.keys())))
     if config["environment"] not in ("staging", "production"):
         raise Refused("Only staging/production accepted")
+    if not isinstance(config["github_runner_enabled"], bool):
+        raise Refused("github_runner_enabled must be explicitly true or false")
     if not re.fullmatch(r"\d{12}", config["account_id"]):
         raise Refused("Invalid AWS account ID")
     for key in ("region", "session_id", "cluster_name", "database_identifier"):
@@ -92,10 +95,13 @@ def validate_config(config):
             "Alert KMS key must be a customer-managed key ARN in the selected account/region"
         )
     runner_key_arn = config.get("runner_token_kms_key_arn")
-    if runner_key_arn not in (None, "") and not re.fullmatch(expected_key, runner_key_arn):
-        raise Refused(
-            "Runner token KMS key must be a customer-managed key ARN in the selected account/region"
-        )
+    if config["github_runner_enabled"]:
+        if not isinstance(runner_key_arn, str) or not re.fullmatch(expected_key, runner_key_arn):
+            raise Refused(
+                "Runner-enabled lifecycle config requires its exact customer-managed KMS key ARN"
+            )
+    elif runner_key_arn not in (None, ""):
+        raise Refused("Disabled GitHub runner config must not include a runner token KMS key ARN")
     return config
 
 

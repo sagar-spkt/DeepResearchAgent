@@ -5,11 +5,6 @@ mock_provider "aws" {
   mock_resource "aws_security_group" {
     defaults = { id = "sg-executor", ingress = [] }
   }
-  mock_data "aws_iam_policy_document" {
-    defaults = {
-      json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"}}]}"
-    }
-  }
 }
 
 variables {
@@ -92,6 +87,16 @@ run "ephemeral_runner_is_scoped_and_private" {
   assert {
     condition     = strcontains(aws_instance.runner[0].user_data, "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40") && !strcontains(aws_instance.runner[0].user_data, "token-value")
     error_message = "Bootstrap must pin the runner checksum and contain no registration token value."
+  }
+  assert {
+    condition = toset(flatten([
+      for statement in jsondecode(aws_iam_role_policy.runner[0].policy).Statement : try(tolist(statement.Action), [statement.Action])
+    ])) == toset(["ssm:GetParameter", "ssm:DeleteParameter", "kms:Decrypt", "ec2:TerminateInstances"])
+    error_message = "Runner instance IAM must contain only exact token handoff and self-termination actions."
+  }
+  assert {
+    condition     = strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Project"), jsonencode("deepresearch"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Component"), jsonencode("github-actions-runner"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Session"), jsonencode("test-1"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Environment"), jsonencode("staging")))
+    error_message = "Self-termination must require exact project, component, session and environment tags."
   }
   assert {
     condition     = length(aws_security_group.executor.ingress) == 0 && aws_vpc_security_group_egress_rule.https.to_port == 443

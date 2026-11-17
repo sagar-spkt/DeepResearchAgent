@@ -24,6 +24,7 @@ CONFIG = {
     "user_pool_id": "us-east-1_pool123",
     "alert_topic_arn": "arn:aws:sns:us-east-1:123456789012:deepresearch-staging-alerts",
     "alert_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+    "github_runner_enabled": False,
 }
 
 
