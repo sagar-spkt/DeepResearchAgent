@@ -89,6 +89,10 @@ run "ephemeral_runner_is_scoped_and_private" {
     error_message = "Runner bootstrap must emit a safe stage marker and non-secret failure location before fail-closed termination."
   }
   assert {
+    condition     = strcontains(aws_instance.runner[0].user_data, "tag_value=\"failed-") && strcontains(aws_iam_role_policy.runner[0].policy, "aws:RequestTag/BootstrapStatus") && strcontains(aws_iam_role_policy.runner[0].policy, "aws:TagKeys") && strcontains(aws_iam_role_policy.runner[0].policy, "failed-*")
+    error_message = "Bootstrap failure reporting must write only a fixed stage and exit code through narrowly scoped instance-tag permission."
+  }
+  assert {
     condition     = strcontains(aws_instance.runner[0].user_data, "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40") && !strcontains(aws_instance.runner[0].user_data, "token-value")
     error_message = "Bootstrap must pin the runner checksum and contain no registration token value."
   }
@@ -103,8 +107,8 @@ run "ephemeral_runner_is_scoped_and_private" {
   assert {
     condition = toset(flatten([
       for statement in jsondecode(aws_iam_role_policy.runner[0].policy).Statement : try(tolist(statement.Action), [statement.Action])
-    ])) == toset(["ssm:GetParameter", "ssm:DeleteParameter", "kms:Decrypt", "ec2:TerminateInstances"])
-    error_message = "Runner instance IAM must contain only exact token handoff and self-termination actions."
+    ])) == toset(["ssm:GetParameter", "ssm:DeleteParameter", "kms:Decrypt", "ec2:TerminateInstances", "ec2:CreateTags"])
+    error_message = "Runner instance IAM must contain only exact token handoff, scoped failure reporting and self-termination actions."
   }
   assert {
     condition     = strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Project"), jsonencode("deepresearch"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Component"), jsonencode("github-actions-runner"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Session"), jsonencode("test-1"))) && strcontains(aws_iam_role_policy.runner[0].policy, format("%s:%s", jsonencode("ec2:ResourceTag/Environment"), jsonencode("staging")))

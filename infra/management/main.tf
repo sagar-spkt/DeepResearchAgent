@@ -224,6 +224,25 @@ locals {
             "ec2:ResourceTag/Environment" = var.environment
           }
         }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags"]
+        Resource = "arn:aws:ec2:${var.region}:${var.account_id}:instance/*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/Project"     = "deepresearch"
+            "ec2:ResourceTag/Component"   = "github-actions-runner"
+            "ec2:ResourceTag/Session"     = var.session_id
+            "ec2:ResourceTag/Environment" = var.environment
+          }
+          StringLike = {
+            "aws:RequestTag/BootstrapStatus" = "failed-*"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["BootstrapStatus"]
+          }
+        }
       }
     ]
   } : null

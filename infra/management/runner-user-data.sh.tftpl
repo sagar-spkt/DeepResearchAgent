@@ -22,6 +22,16 @@ on_exit() {
   if [[ "$bootstrap_complete" != true ]]; then
     printf '[runner-bootstrap] failed at %s with exit %s\n' "$bootstrap_step" "$status" >/dev/console 2>/dev/null || true
     rm -f /run/actions-runner/token /opt/actions-runner/configure-once.sh || true
+    local token instance_id safe_step
+    token=$(curl --fail --silent --show-error --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || token=
+    if [[ -n "$token" ]]; then
+      instance_id=$(curl --fail --silent --show-error --header "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/instance-id) || instance_id=
+      if [[ -n "$instance_id" ]]; then
+        safe_step=$(printf '%s' "$bootstrap_step" | tr ' ' '-')
+        tag_value="failed-$safe_step-$status"
+        aws ec2 create-tags --resources "$instance_id" --tags "Key=BootstrapStatus,Value=$tag_value" >/dev/null 2>&1 || true
+      fi
+    fi
     terminate_self
   fi
   exit "$status"
