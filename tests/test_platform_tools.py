@@ -182,6 +182,7 @@ class PlatformToolsTest(unittest.TestCase):
                         "EVENT_NAME": event,
                         "DEPLOYMENT_MODE": mode,
                         "STAGING_CONFIRMATION": confirmation,
+                        "STAGING_SESSION_ID": "stg-20261117",
                         "GITHUB_ACTOR": "test-operator",
                         "GITHUB_SHA": "a" * 40,
                     },
@@ -213,6 +214,7 @@ class PlatformToolsTest(unittest.TestCase):
                         "EXPIRY_READY": "",
                         "ARTIFACTS_READY": "",
                         "CLEANUP_READY": "",
+                        "STAGING_SESSION_ID": "stg-20261117",
                         "GITHUB_OUTPUT": str(output),
                         "GITHUB_STEP_SUMMARY": str(summary),
                         **values,
@@ -234,6 +236,11 @@ class PlatformToolsTest(unittest.TestCase):
             output, summary = evaluate(**values)
             self.assertEqual(f"accepted={expected}\n", output)
             self.assertIn(message, summary)
+
+        for invalid_session in ("", "stg;echo"):
+            output, summary = evaluate(STAGING_SESSION_ID=invalid_session)
+            self.assertEqual("accepted=false\n", output)
+            self.assertIn("current active session ID", summary)
 
         closed_defaults = {
             "DEPLOYMENT_MODE": "closed-rehearsal",
@@ -267,6 +274,7 @@ class PlatformToolsTest(unittest.TestCase):
             ["self-hosted", "linux", "staging-vpc"],
             workflow["jobs"]["deploy"]["runs-on"],
         )
+        self.assertTrue(workflow["on"]["workflow_dispatch"]["inputs"]["session_id"]["required"])
         deploy = next(
             step
             for step in workflow["jobs"]["deploy"]["steps"]

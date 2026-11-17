@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -11,7 +12,6 @@ from uuid import uuid4
 
 TABLE = "deepresearch-control"
 REGION = "us-east-1"
-SESSION_ID = "stg-20261116"
 ENVIRONMENT = "staging"
 ACCOUNT_ID = "088759500358"
 LEASE_SECONDS = 120
@@ -19,6 +19,12 @@ LEASE_SECONDS = 120
 
 class LeaseError(RuntimeError):
     pass
+
+
+def validate_session_id(session_id):
+    if not isinstance(session_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,15}", session_id):
+        raise LeaseError("The staging session ID is invalid")
+    return session_id
 
 
 def request(args, runner=subprocess.run):
@@ -51,10 +57,11 @@ def item(key, runner=subprocess.run):
     return result.get("Item", {})
 
 
-def assert_admission(runner=subprocess.run):
+def assert_admission(session_id, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
     current = item("active-session", runner)
     expected = {
-        "session_id": SESSION_ID,
+        "session_id": session_id,
         "environment": ENVIRONMENT,
         "account_id": ACCOUNT_ID,
     }
@@ -66,8 +73,9 @@ def assert_admission(runner=subprocess.run):
         raise LeaseError("The staging admission start time is invalid") from exc
 
 
-def acquire(owner, now=None, runner=subprocess.run):
-    start = assert_admission(runner)
+def acquire(owner, session_id, now=None, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
     instant = int(time.time() if now is None else now)
     deadline = start + 4 * 60 * 60
     if instant >= deadline:
@@ -88,7 +96,7 @@ def acquire(owner, now=None, runner=subprocess.run):
                 {
                     ":owner": {"S": owner},
                     ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
-                    ":session": {"S": SESSION_ID},
+                    ":session": {"S": session_id},
                     ":now": {"N": str(instant)},
                 }
             ),
@@ -97,8 +105,9 @@ def acquire(owner, now=None, runner=subprocess.run):
     )
 
 
-def assert_owner(owner, now=None, runner=subprocess.run):
-    start = assert_admission(runner)
+def assert_owner(owner, session_id, now=None, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
     current = item("lifecycle-lock", runner)
     instant = int(time.time() if now is None else now)
     deadline = start + 4 * 60 * 60
@@ -107,14 +116,15 @@ def assert_owner(owner, now=None, runner=subprocess.run):
         instant >= deadline
         or expires > deadline
         or current.get("owner_id", {}).get("S") != owner
-        or current.get("session_id", {}).get("S") != SESSION_ID
+        or current.get("session_id", {}).get("S") != session_id
         or expires <= instant
     ):
         raise LeaseError("The staging lifecycle lease expired or changed owner")
 
 
-def renew(owner, now=None, runner=subprocess.run):
-    start = assert_admission(runner)
+def renew(owner, session_id, now=None, runner=subprocess.run):
+    session_id = validate_session_id(session_id)
+    start = assert_admission(session_id, runner)
     instant = int(time.time() if now is None else now)
     deadline = start + 4 * 60 * 60
     if instant >= deadline:
@@ -134,7 +144,7 @@ def renew(owner, now=None, runner=subprocess.run):
             json.dumps(
                 {
                     ":owner": {"S": owner},
-                    ":session": {"S": SESSION_ID},
+                    ":session": {"S": session_id},
                     ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
                     ":now": {"N": str(instant)},
                     ":deadline": {"N": str(deadline)},
@@ -166,25 +176,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["acquire", "assert", "heartbeat"])
     parser.add_argument("--owner-file", type=Path, required=True)
+    parser.add_argument("--session-id", required=True)
     parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()
     try:
         if args.operation == "acquire":
             owner = str(uuid4())
-            acquire(owner)
+            acquire(owner, args.session_id)
             descriptor = os.open(args.owner_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w") as target:
                 target.write(owner + "\n")
         else:
             owner = read_owner(args.owner_file)
             if args.operation == "assert":
-                assert_owner(owner)
+                assert_owner(owner, args.session_id)
             else:
                 if not 10 <= args.interval <= 60:
                     raise LeaseError("Heartbeat interval must be 10–60 seconds")
                 while True:
                     try:
-                        renew(owner)
+                        renew(owner, args.session_id)
                         write_heartbeat_status(args.owner_file)
                     except LeaseError:
                         write_heartbeat_status(args.owner_file, lost=True)

@@ -29,7 +29,7 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
                 )
             return subprocess.CompletedProcess(argv, 0, "{}", "")
 
-        acquire("workflow-owner", now=1000, runner=runner)
+        acquire("workflow-owner", "stg-20261116", now=1000, runner=runner)
         update = next(call for call in calls if "update-item" in call)
         self.assertEqual(
             "attribute_not_exists(owner_id) OR expires_at < :now",
@@ -52,7 +52,7 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(LeaseError, "not the active admission"):
-            acquire("workflow-owner", now=1000, runner=runner)
+            acquire("workflow-owner", "stg-20261116", now=1000, runner=runner)
         self.assertEqual(1, len(calls))
         self.assertIn("get-item", calls[0])
 
@@ -79,17 +79,17 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
                 )
             return subprocess.CompletedProcess(argv, 0, "{}", "")
 
-        acquire("near-deadline", now=15350, runner=runner)
+        acquire("near-deadline", "stg-20261116", now=15350, runner=runner)
         update = next(call for call in calls if "update-item" in call)
         values = json.loads(update[update.index("--expression-attribute-values") + 1])
         self.assertEqual("15400", values[":expires"]["N"])
         calls.clear()
         with self.assertRaisesRegex(LeaseError, "deadline has passed"):
-            acquire("too-late", now=15400, runner=runner)
+            acquire("too-late", "stg-20261116", now=15400, runner=runner)
         self.assertFalse(any("update-item" in call for call in calls))
         calls.clear()
         with self.assertRaisesRegex(LeaseError, "deadline has passed"):
-            renew("near-deadline", now=15400, runner=runner)
+            renew("near-deadline", "stg-20261116", now=15400, runner=runner)
         self.assertFalse(any("update-item" in call for call in calls))
 
     def test_assert_and_renew_are_bound_to_owner_and_session(self):
@@ -115,13 +115,53 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"Item": items[key]}), "")
             return subprocess.CompletedProcess(argv, 0, "{}", "")
 
-        assert_owner("workflow-owner", now=1100, runner=runner)
-        renew("workflow-owner", now=1100, runner=runner)
+        assert_owner("workflow-owner", "stg-20261116", now=1100, runner=runner)
+        renew("workflow-owner", "stg-20261116", now=1100, runner=runner)
         update = calls[-1]
         condition = update[update.index("--condition-expression") + 1]
         self.assertIn("owner_id = :owner", condition)
         self.assertIn("session_id = :session", condition)
         self.assertIn("expires_at > :now", condition)
+
+    def test_session_id_is_validated_before_any_cloud_call(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            raise AssertionError("invalid session IDs must be rejected before AWS")
+
+        with self.assertRaisesRegex(LeaseError, "session ID is invalid"):
+            acquire("workflow-owner", "stg;aws", runner=runner)
+        self.assertEqual([], calls)
+
+    def test_lease_uses_the_explicit_current_session_id(self):
+        calls = []
+        session_id = "stg-20261117"
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    json.dumps(
+                        {
+                            "Item": {
+                                "session_id": {"S": session_id},
+                                "environment": {"S": "staging"},
+                                "account_id": {"S": "088759500358"},
+                                "started_at": {"N": "1000"},
+                            }
+                        }
+                    ),
+                    "",
+                )
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+        acquire("workflow-owner", session_id, now=1000, runner=runner)
+        update = next(call for call in calls if "update-item" in call)
+        values = json.loads(update[update.index("--expression-attribute-values") + 1])
+        self.assertEqual(session_id, values[":session"]["S"])
 
 
 if __name__ == "__main__":
