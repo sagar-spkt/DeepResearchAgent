@@ -16,9 +16,11 @@ from lifecycle.core import (
     bootstrap_cleanup_execute,
     command,
     digest,
+    execute_database_restore,
     execute_expiry,
     now,
     prepare_bootstrap_cleanup,
+    prepare_database_restore,
     prepare_expiry,
     prepare_shutdown,
     restore_prepare,
@@ -70,6 +72,8 @@ def main():
             "shutdown",
             "plan-bootstrap-cleanup",
             "bootstrap-cleanup",
+            "plan-database-restore",
+            "database-restore",
             "restore",
             "deploy",
             "promote",
@@ -109,6 +113,7 @@ def main():
             "backup",
             "shutdown",
             "bootstrap-cleanup",
+            "database-restore",
             "expiry",
             "admit",
             "release",
@@ -124,6 +129,7 @@ def main():
                 "backup": "backup",
                 "shutdown": "shutdown",
                 "bootstrap-cleanup": "bootstrap-cleanup",
+                "database-restore": "database-restore",
                 "expiry": "expiry",
                 "admit": "admission",
             }.get(args.operation)
@@ -142,16 +148,26 @@ def main():
                 cleanup_receipt = load(args.receipt)
                 from lifecycle.inventory import _validate_bootstrap_cleanup_evidence
 
-                _validate_bootstrap_cleanup_evidence(
-                    plan["config"], cleanup_plan, cleanup_receipt
-                )
-                if (
-                    plan.get("bootstrap_cleanup_plan_sha256") != digest(cleanup_plan)
-                    or plan.get("bootstrap_cleanup_receipt_sha256") != digest(cleanup_receipt)
-                ):
-                    raise Refused("Bootstrap release artifacts do not match the approved release plan")
+                _validate_bootstrap_cleanup_evidence(plan["config"], cleanup_plan, cleanup_receipt)
+                if plan.get("bootstrap_cleanup_plan_sha256") != digest(cleanup_plan) or plan.get(
+                    "bootstrap_cleanup_receipt_sha256"
+                ) != digest(cleanup_receipt):
+                    raise Refused(
+                        "Bootstrap release artifacts do not match the approved release plan"
+                    )
             elif args.bootstrap_cleanup_plan:
                 raise Refused("--bootstrap-cleanup-plan is only valid for bootstrap release")
+            restore_receipt = None
+            if args.operation == "database-restore":
+                if not args.receipt:
+                    raise Refused("Database restore requires the reviewed backup --receipt")
+                restore_receipt = load(args.receipt)
+                if restore_receipt.get("config") != plan.get("config") or digest(
+                    restore_receipt
+                ) != plan.get("receipt_sha256"):
+                    raise Refused(
+                        "Backup receipt does not match the approved database restore plan"
+                    )
             if args.environment and args.environment != plan["config"]["environment"]:
                 raise Refused("Environment argument conflicts with the approved plan")
             reserved = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -197,6 +213,10 @@ def main():
                 elif args.operation == "expiry":
                     result = execute_expiry(
                         plan, args.approved_plan_hash, args.workspace, aws, runner=guarded_runner
+                    )
+                elif args.operation == "database-restore":
+                    result = execute_database_restore(
+                        plan, restore_receipt, args.approved_plan_hash, aws
                     )
                 elif args.operation == "backup":
                     result = backup_execute(plan, args.approved_plan_hash, aws)
@@ -267,6 +287,10 @@ def main():
                 if config is None:
                     raise Refused("--config required")
                 result = backup_plan(config)
+            elif args.operation == "plan-database-restore":
+                if not args.receipt:
+                    raise Refused("--receipt required")
+                result = prepare_database_restore(load(args.receipt))
             elif args.operation == "collect":
                 if config is None:
                     raise Refused("--config required")

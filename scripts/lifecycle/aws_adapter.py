@@ -338,28 +338,7 @@ class AWSAdapter:
         ) > now() + timedelta(minutes=2):
             raise Refused("Backup receipt expired or from the future")
         self.verify_retained()
-        snap = receipt["database_snapshot"]
-        actual = self.clients["rds"].describe_db_snapshots(DBSnapshotIdentifier=snap["identifier"])[
-            "DBSnapshots"
-        ][0]
-        expected_arn = f"arn:aws:rds:{self.config['region']}:{self.config['account_id']}:snapshot:"
-        tags = {
-            v["Key"]: v["Value"]
-            for v in self.clients["rds"].list_tags_for_resource(
-                ResourceName=actual["DBSnapshotArn"]
-            )["TagList"]
-        }
-        if (
-            actual["Status"] != "available"
-            or not actual.get("Encrypted")
-            or actual["DBSnapshotArn"] != snap["arn"]
-            or not snap["arn"].startswith(expected_arn)
-            or actual["DBInstanceIdentifier"] != self.config["database_identifier"]
-            or tags.get("Environment") != self.config["environment"]
-            or tags.get("Session") != self.config["session_id"]
-        ):
-            raise Refused("Provider snapshot verification failed")
-        self.verify_snapshot_timing(actual, receipt)
+        self.verify_backup_snapshot(receipt)
         expected_prefix = f"sessions/{self.config['environment']}/{self.config['session_id']}/"
         if receipt["clickhouse"]["prefix"] != expected_prefix + "clickhouse/":
             raise Refused("Unexpected ClickHouse backup prefix")
@@ -399,6 +378,277 @@ class AWSAdapter:
             self.verify_durable_receipt(receipt)
         if require_quiesced:
             self.verify_quiesced(receipt["drain"])
+
+    def verify_backup_snapshot(self, receipt):
+        """Provider-verify the exact encrypted, session-tagged snapshot in a receipt."""
+        snapshot = receipt["database_snapshot"]
+        descriptions = self.clients["rds"].describe_db_snapshots(
+            DBSnapshotIdentifier=snapshot["identifier"]
+        )["DBSnapshots"]
+        if len(descriptions) != 1:
+            raise Refused("Backup snapshot lookup was not unique")
+        actual = descriptions[0]
+        expected_arn = f"arn:aws:rds:{self.config['region']}:{self.config['account_id']}:snapshot:"
+        tags = {
+            v["Key"]: v["Value"]
+            for v in self.clients["rds"].list_tags_for_resource(
+                ResourceName=actual["DBSnapshotArn"]
+            )["TagList"]
+        }
+        if (
+            actual["Status"] != "available"
+            or not actual.get("Encrypted")
+            or actual["DBSnapshotIdentifier"] != snapshot["identifier"]
+            or actual["DBSnapshotArn"] != snapshot["arn"]
+            or not snapshot["arn"].startswith(expected_arn)
+            or actual["DBInstanceIdentifier"] != self.config["database_identifier"]
+            or tags.get("Project") != "deepresearch"
+            or tags.get("Environment") != self.config["environment"]
+            or tags.get("Session") != self.config["session_id"]
+        ):
+            raise Refused("Provider snapshot verification failed")
+        self.verify_snapshot_timing(actual, receipt)
+        return actual
+
+    def verify_private_restore_subnet_group(self, subnet_group_name):
+        groups = (
+            self.clients["rds"]
+            .describe_db_subnet_groups(DBSubnetGroupName=subnet_group_name)
+            .get("DBSubnetGroups", [])
+        )
+        if (
+            len(groups) != 1
+            or groups[0].get("DBSubnetGroupName") != subnet_group_name
+            or groups[0].get("SubnetGroupStatus") != "Complete"
+        ):
+            raise Refused("Restore DB subnet group is missing, ambiguous, or incomplete")
+        group = groups[0]
+        subnet_entries = group.get("Subnets", [])
+        subnet_ids = [item.get("SubnetIdentifier") for item in subnet_entries]
+        vpc_id = group.get("VpcId")
+        if (
+            not isinstance(vpc_id, str)
+            or not re.fullmatch(r"vpc-[0-9a-f]{8,17}", vpc_id)
+            or len(subnet_ids) < 2
+            or len(set(subnet_ids)) != len(subnet_ids)
+            or any(not subnet_id for subnet_id in subnet_ids)
+            or any(item.get("SubnetStatus") != "Active" for item in subnet_entries)
+        ):
+            raise Refused("Restore DB subnet group does not contain active distinct VPC subnets")
+        subnet_group_tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=group["DBSubnetGroupArn"]
+            )["TagList"]
+        }
+        if any(
+            subnet_group_tags.get(key) != value
+            for key, value in {
+                "Project": "deepresearch",
+                "Environment": self.config["environment"],
+                "Session": self.config["session_id"],
+            }.items()
+        ):
+            raise Refused("Restore DB subnet group tags do not match the session")
+        subnets = self.clients["ec2"].describe_subnets(SubnetIds=subnet_ids).get("Subnets", [])
+        if len(subnets) != len(subnet_ids) or any(
+            item.get("SubnetId") not in subnet_ids
+            or item.get("VpcId") != vpc_id
+            or item.get("MapPublicIpOnLaunch") is not False
+            for item in subnets
+        ):
+            raise Refused("Restore DB subnet group includes a missing or public-address subnet")
+        route_tables = (
+            self.clients["ec2"]
+            .describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+            .get("RouteTables", [])
+        )
+        for subnet_id in subnet_ids:
+            explicit = [
+                table
+                for table in route_tables
+                if any(
+                    association.get("SubnetId") == subnet_id
+                    for association in table.get("Associations", [])
+                )
+            ]
+            if len(explicit) > 1:
+                raise Refused("Restore subnet has ambiguous route table associations")
+            associated = explicit or [
+                table
+                for table in route_tables
+                if any(
+                    association.get("Main") is True for association in table.get("Associations", [])
+                )
+            ]
+            if len(associated) != 1:
+                raise Refused("Restore subnet has no unique route table")
+            if any(
+                isinstance(route.get("GatewayId"), str) and route["GatewayId"].startswith("igw-")
+                for route in associated[0].get("Routes", [])
+            ):
+                raise Refused("Restore DB subnet group routes directly to an internet gateway")
+        return vpc_id
+
+    def ensure_restore_security_group(self, vpc_id, plan):
+        """Create or verify a session-scoped SG with no ingress or egress rules."""
+        name = plan["restore_security_group_name"]
+        tags = {
+            **plan["tags"],
+            "Component": "database-restore-security-group",
+        }
+        response = self.clients["ec2"].describe_security_groups(
+            Filters=[
+                {"Name": "group-name", "Values": [name]},
+                {"Name": "vpc-id", "Values": [vpc_id]},
+            ]
+        )
+        groups = response.get("SecurityGroups", [])
+        if len(groups) > 1:
+            raise Refused("Restore security group lookup was ambiguous")
+        if not groups:
+            self.require_lease()
+            created = self.clients["ec2"].create_security_group(
+                GroupName=name,
+                Description=f"Isolated RDS restore for {self.config['session_id']}",
+                VpcId=vpc_id,
+                TagSpecifications=[
+                    {
+                        "ResourceType": "security-group",
+                        "Tags": [
+                            {"Key": key, "Value": value} for key, value in sorted(tags.items())
+                        ],
+                    }
+                ],
+            )
+            group_id = created.get("GroupId")
+            if not isinstance(group_id, str) or not re.fullmatch(r"sg-[0-9a-f]{8,17}", group_id):
+                raise Refused("Restore security group creation returned no valid ID")
+            groups = (
+                self.clients["ec2"]
+                .describe_security_groups(GroupIds=[group_id])
+                .get("SecurityGroups", [])
+            )
+        if len(groups) != 1:
+            raise Refused("Restore security group could not be uniquely inspected")
+        group = groups[0]
+        group_tags = {item["Key"]: item["Value"] for item in group.get("Tags", [])}
+        if (
+            not isinstance(group.get("GroupId"), str)
+            or not re.fullmatch(r"sg-[0-9a-f]{8,17}", group["GroupId"])
+            or group.get("GroupName") != name
+            or group.get("VpcId") != vpc_id
+            or group_tags != tags
+            or group.get("IpPermissions") != []
+        ):
+            raise Refused("Restore security group is not exclusively scoped and ingress-isolated")
+        group_id = group.get("GroupId")
+        egress = group.get("IpPermissionsEgress", [])
+        if egress:
+            self.require_lease()
+            self.clients["ec2"].revoke_security_group_egress(
+                GroupId=group["GroupId"], IpPermissions=egress
+            )
+        verified = (
+            self.clients["ec2"]
+            .describe_security_groups(GroupIds=[group["GroupId"]])
+            .get("SecurityGroups", [])
+        )
+        if len(verified) != 1:
+            raise Refused("Restore security group could not be uniquely inspected")
+        group = verified[0]
+        group_tags = {item["Key"]: item["Value"] for item in group.get("Tags", [])}
+        if (
+            group.get("GroupId") != group_id
+            or group.get("GroupName") != name
+            or group.get("VpcId") != vpc_id
+            or group_tags != tags
+            or group.get("IpPermissions") != []
+            or group.get("IpPermissionsEgress") != []
+        ):
+            raise Refused("Restore security group is not exclusively scoped and rule-free")
+        return group["GroupId"]
+
+    def restore_database_snapshot(self, plan, receipt):
+        """Restore a verified receipt snapshot to a new private, tagged DB instance."""
+        self.require_lease()
+        if plan.get("config") != self.config:
+            raise Refused("Restore plan configuration does not match this adapter")
+        self.verify_receipt(receipt, require_quiesced=False, allow_expired=True)
+        snapshot = receipt["database_snapshot"]
+        if (
+            snapshot.get("identifier") != plan.get("source_snapshot_identifier")
+            or snapshot.get("arn") != plan.get("source_snapshot_arn")
+            or receipt["config"]["database_identifier"] != plan.get("source_database_identifier")
+            or plan.get("target_database_identifier") == plan.get("source_database_identifier")
+        ):
+            raise Refused("Restore source or target does not match the approved receipt")
+        vpc_id = self.verify_private_restore_subnet_group(plan["db_subnet_group_name"])
+        target = plan["target_database_identifier"]
+        try:
+            response = self.clients["rds"].describe_db_instances(DBInstanceIdentifier=target)
+        except self.clients["rds"].exceptions.DBInstanceNotFoundFault:
+            response = None
+        if response is not None:
+            raise Refused("Restore target already exists or lookup is ambiguous")
+        security_group_id = self.ensure_restore_security_group(vpc_id, plan)
+        self.require_lease()
+        self.clients["rds"].restore_db_instance_from_db_snapshot(
+            DBInstanceIdentifier=target,
+            DBSnapshotIdentifier=plan["source_snapshot_identifier"],
+            DBInstanceClass=plan["db_instance_class"],
+            DBSubnetGroupName=plan["db_subnet_group_name"],
+            VpcSecurityGroupIds=[security_group_id],
+            MultiAZ=False,
+            PubliclyAccessible=False,
+            CopyTagsToSnapshot=False,
+            Tags=[{"Key": key, "Value": value} for key, value in sorted(plan["tags"].items())],
+        )
+        self.clients["rds"].get_waiter("db_instance_available").wait(
+            DBInstanceIdentifier=target, WaiterConfig={"Delay": 15, "MaxAttempts": 40}
+        )
+        self.require_lease()
+        instances = (
+            self.clients["rds"]
+            .describe_db_instances(DBInstanceIdentifier=target)
+            .get("DBInstances", [])
+        )
+        if len(instances) != 1:
+            raise Refused("Restored DB instance lookup was not unique")
+        instance = instances[0]
+        expected_arn = (
+            f"arn:aws:rds:{self.config['region']}:{self.config['account_id']}:db:{target}"
+        )
+        tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=instance["DBInstanceArn"]
+            )["TagList"]
+        }
+        expected_tags = plan["tags"]
+        if (
+            instance.get("DBInstanceIdentifier") != target
+            or instance.get("DBInstanceArn") != expected_arn
+            or instance.get("DBInstanceStatus") != "available"
+            or instance.get("DBInstanceClass") != plan["db_instance_class"]
+            or instance.get("StorageEncrypted") is not True
+            or instance.get("PubliclyAccessible") is not False
+            or instance.get("DBSubnetGroup", {}).get("DBSubnetGroupName")
+            != plan["db_subnet_group_name"]
+            or instance.get("VpcSecurityGroups")
+            != [{"VpcSecurityGroupId": security_group_id, "Status": "active"}]
+            or any(tags.get(key) != value for key, value in expected_tags.items())
+        ):
+            raise Refused(
+                "Restored DB provider state does not match the approved private encrypted target"
+            )
+        return {
+            "target_database_identifier": target,
+            "target_database_arn": expected_arn,
+            "source_snapshot_identifier": plan["source_snapshot_identifier"],
+            "source_snapshot_arn": plan["source_snapshot_arn"],
+            "provider_verified": True,
+        }
 
     def cluster_albs(self):
         result = []

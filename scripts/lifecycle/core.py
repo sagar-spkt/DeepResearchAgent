@@ -897,6 +897,125 @@ def restore_prepare(receipt, adapter):
     }
 
 
+def prepare_database_restore(receipt, instant=None):
+    """Create a reviewed plan to restore only the receipt's exact RDS snapshot."""
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("operation") != "backup-receipt"
+        or receipt.get("identities_retained") is not True
+    ):
+        raise Refused("Database restore requires a retained backup receipt")
+    config = validate_config(receipt.get("config"))
+    snapshot = receipt.get("database_snapshot")
+    if not isinstance(snapshot, dict):
+        raise Refused("Backup receipt has no RDS snapshot")
+    identifier = snapshot.get("identifier")
+    arn = snapshot.get("arn")
+    expected_arn = f"arn:aws:rds:{config['region']}:{config['account_id']}:snapshot:{identifier}"
+    expected_snapshot = f"{config['database_identifier']}-{config['session_id']}-backup"
+    if (
+        not isinstance(identifier, str)
+        or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", identifier)
+        or identifier != expected_snapshot
+        or not isinstance(arn, str)
+        or arn != expected_arn
+        or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", config["session_id"])
+    ):
+        raise Refused("Backup snapshot identity does not match the configured account and region")
+    target = f"{config['database_identifier']}-restore-{config['session_id']}"
+    if target == config["database_identifier"] or len(target) > 63:
+        raise Refused("Restore target must be a distinct session-scoped RDS identifier")
+    instant = instant or now()
+    tags = {
+        "Project": "deepresearch",
+        "Environment": config["environment"],
+        "Session": config["session_id"],
+        "Component": "database-restore",
+        "RestoreSourceSnapshotArn": arn,
+    }
+    return {
+        "version": 1,
+        "operation": "database-restore",
+        "config": config,
+        "created_at": instant.isoformat(),
+        "expires_at": (instant + timedelta(hours=1)).isoformat(),
+        "receipt_sha256": digest(receipt),
+        "source_database_identifier": config["database_identifier"],
+        "source_snapshot_identifier": identifier,
+        "source_snapshot_arn": arn,
+        "target_database_identifier": target,
+        "db_subnet_group_name": config["database_identifier"],
+        "restore_security_group_name": (
+            f"deepresearch-{config['environment']}-{config['session_id']}-db-restore"
+        ),
+        "db_instance_class": "db.t4g.small",
+        "tags": tags,
+        "mutations": [
+            "restore the exact encrypted receipt snapshot into a new private RDS instance",
+            "verify target availability, encryption, private subnet group and session tags",
+        ],
+        "restore_rehearsed": False,
+        "database_restore_verified": False,
+        "application_restore_rehearsed": False,
+        "full_recovery_accepted": False,
+    }
+
+
+def execute_database_restore(plan, receipt, approved_hash, adapter, instant=None):
+    """Restore one approved snapshot without changing the original receipt or DB."""
+    approve(plan, approved_hash, instant)
+    if plan.get("operation") != "database-restore":
+        raise Refused("Not a database restore plan")
+    if not isinstance(receipt, dict) or digest(receipt) != plan.get("receipt_sha256"):
+        raise Refused("Backup receipt changed after restore approval")
+    expected = prepare_database_restore(receipt, instant=timestamp(plan["created_at"]))
+    for key in (
+        "config",
+        "source_database_identifier",
+        "source_snapshot_identifier",
+        "source_snapshot_arn",
+        "target_database_identifier",
+        "db_subnet_group_name",
+        "restore_security_group_name",
+        "db_instance_class",
+        "tags",
+    ):
+        if plan.get(key) != expected.get(key):
+            raise Refused("Database restore plan does not match its receipt scope")
+    if any(
+        plan.get(key) is not False
+        for key in (
+            "restore_rehearsed",
+            "database_restore_verified",
+            "application_restore_rehearsed",
+            "full_recovery_accepted",
+        )
+    ):
+        raise Refused("Restore plan cannot claim recovery acceptance")
+    adapter.restore_database_snapshot(plan, receipt)
+    approve(plan, approved_hash, instant)
+    return {
+        "version": 1,
+        "operation": "database-restore-receipt",
+        "config": plan["config"],
+        "created_at": now().isoformat(),
+        "plan_hash": digest(plan),
+        "source_database_identifier": plan["source_database_identifier"],
+        "source_snapshot_identifier": plan["source_snapshot_identifier"],
+        "source_snapshot_arn": plan["source_snapshot_arn"],
+        "target_database_identifier": plan["target_database_identifier"],
+        "database_restore_verified": True,
+        "restore_rehearsed": False,
+        "application_restore_rehearsed": False,
+        "full_recovery_accepted": False,
+        "remaining_steps": [
+            "restore and semantically verify ClickHouse backup data",
+            "restore Valkey and verify application and pending-work behavior",
+            "restore application configuration and verify identity, document and history semantics",
+        ],
+    }
+
+
 def private_json(path, value):
     import os
 
