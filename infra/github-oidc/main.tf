@@ -99,12 +99,17 @@ resource "aws_iam_role_policies_exclusive" "github_actions" {
   }
 }
 
+data "aws_db_instance" "staging_bootstrap" {
+  count                  = var.enable_staging_database_bootstrap ? 1 : 0
+  db_instance_identifier = "deepresearch-staging"
+}
+
 resource "aws_iam_role_policy" "staging_deploy" {
   name = "deepresearch-staging-deploy"
   role = aws_iam_role.github_actions["staging"].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "AuthenticateToECR"
         Effect   = "Allow"
@@ -170,7 +175,12 @@ resource "aws_iam_role_policy" "staging_deploy" {
         Action   = ["route53:GetChange"]
         Resource = "arn:aws:route53:::change/*"
       },
-    ]
+      ], var.enable_staging_database_bootstrap ? [{
+        Sid      = "ReadCurrentStagingDatabaseBootstrapSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = one(data.aws_db_instance.staging_bootstrap[0].master_user_secret).secret_arn
+    }] : [])
   })
 
   lifecycle {

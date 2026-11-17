@@ -39,7 +39,7 @@ def request(args, runner=subprocess.run):
     if result.returncode:
         raise LeaseError("DynamoDB lifecycle lease operation failed")
     if not result.stdout.strip() and any(
-        operation in args for operation in ("update-item", "put-item", "transact-write-items")
+        operation in args for operation in ("get-item", "update-item", "put-item", "transact-write-items")
     ):
         return {}
     try:

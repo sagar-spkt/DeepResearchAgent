@@ -31,3 +31,9 @@ variable "staging_runner_ami_id" {
   }
 }
 
+
+variable "enable_staging_database_bootstrap" {
+  type        = bool
+  default     = false
+  description = "Bind staging deployment to the current managed master secret of the deepresearch-staging RDS instance during database bootstrap."
+}
