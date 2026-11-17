@@ -156,6 +156,7 @@ class InventoryCollector:
         for stage in (
             self.control_retention,
             self.network,
+            self.runner_token_key,
             self.compute,
             self.database,
             self.load_balancers,
@@ -185,6 +186,57 @@ class InventoryCollector:
             "scope": "Enumerated deepresearch runtime/foundation/expiry resources in the selected account and region; not an account-wide zero-billing assertion",
             "charges_may_continue": True,
         }
+
+    def runner_token_key(self):
+        """Inventory the optional management runner key so closeout cannot miss billing."""
+        key_arn = self.config.get("runner_token_kms_key_arn")
+        if not key_arn:
+            return
+        result = self.call(
+            "kms:runner-token-key",
+            lambda: self.clients["kms"].describe_key(KeyId=key_arn),
+            ("NotFoundException",),
+        )
+        if result is None:
+            return
+        metadata = result.get("KeyMetadata", {})
+        valid_identity = (
+            metadata.get("Arn") == key_arn
+            and metadata.get("KeyManager") == "CUSTOMER"
+            and metadata.get("KeyUsage") == "ENCRYPT_DECRYPT"
+            and metadata.get("Description")
+            == f"One-time GitHub runner registration token for {self.config['session_id']}"
+        )
+        self.require(valid_identity, "management-runner-kms-identity")
+        tag_result = self.call(
+            "kms:runner-token-key-tags",
+            lambda: self.clients["kms"].list_resource_tags(KeyId=key_arn),
+        )
+        key_tags = tags((tag_result or {}).get("Tags"))
+        valid_tags = (
+            key_tags.get("Project") == "deepresearch"
+            and key_tags.get("Environment") == self.config["environment"]
+            and key_tags.get("Session") == self.config["session_id"]
+            and key_tags.get("Component") == "github-runner-token-key"
+        )
+        self.require(valid_tags, "management-runner-kms-tags")
+        if metadata.get("KeyState") == "PendingDeletion" and valid_identity and valid_tags:
+            deletion_date = metadata.get("DeletionDate")
+            self.require(deletion_date is not None, "management-runner-kms-deletion-date")
+            self.record(
+                self.retained,
+                "kms-key-pending-deletion",
+                key_arn,
+                billed=True,
+                deletion_date=(deletion_date.isoformat() if hasattr(deletion_date, "isoformat") else None),
+            )
+        else:
+            self.record(
+                self.management,
+                "runner-token-kms-key",
+                key_arn,
+                state=metadata.get("KeyState", "unknown"),
+            )
 
     def network(self):
         ec2 = self.clients["ec2"]

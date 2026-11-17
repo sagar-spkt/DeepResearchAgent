@@ -22,6 +22,10 @@ variables {
 run "private_executor_network" {
   command = plan
   assert {
+    condition     = length(aws_kms_key.runner_token) == 0 && length(aws_instance.runner) == 0
+    error_message = "The runner key and EC2 instance must both be absent when disabled."
+  }
+  assert {
     condition     = aws_vpc.management.cidr_block == "10.70.0.0/16" && aws_subnet.executor.cidr_block == "10.70.1.0/24"
     error_message = "Management must remain separate from runtime 10.60.0.0/16."
   }
@@ -43,10 +47,20 @@ run "private_executor_network" {
   }
 }
 
+run "runner_key_can_be_created_before_launch" {
+  command = plan
+  variables { enable_github_runner = true }
+  assert {
+    condition     = length(aws_kms_key.runner_token) == 1 && length(aws_instance.runner) == 0
+    error_message = "Runner opt-in must create its KMS key without starting an instance before token staging."
+  }
+}
+
 run "ephemeral_runner_is_scoped_and_private" {
   command = apply
   variables {
     enable_github_runner                 = true
+    launch_github_runner                 = true
     github_repository                    = "owner/repo"
     github_runner_ami_id                 = "ami-0123456789abcdef0"
     github_runner_registration_parameter = "/deepresearch/runner/test-1/registration"
@@ -70,6 +84,10 @@ run "ephemeral_runner_is_scoped_and_private" {
   assert {
     condition     = aws_instance.runner[0].tags["Component"] == "github-actions-runner" && aws_instance.runner[0].tags["Session"] == "test-1"
     error_message = "Runner termination scope must include exact session tags."
+  }
+  assert {
+    condition     = strcontains(aws_instance.runner[0].user_data, "chmod 755 /usr/local/sbin/actions-runner-terminate") && strcontains(aws_instance.runner[0].user_data, "trap on_exit EXIT") && strcontains(aws_instance.runner[0].user_data, "OnActiveSec=85min")
+    error_message = "Bootstrap must install an executable completion hook and deadline before setup failure."
   }
   assert {
     condition     = strcontains(aws_instance.runner[0].user_data, "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40") && !strcontains(aws_instance.runner[0].user_data, "token-value")

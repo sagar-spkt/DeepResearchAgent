@@ -91,6 +91,11 @@ def validate_config(config):
         raise Refused(
             "Alert KMS key must be a customer-managed key ARN in the selected account/region"
         )
+    runner_key_arn = config.get("runner_token_kms_key_arn")
+    if runner_key_arn not in (None, "") and not re.fullmatch(expected_key, runner_key_arn):
+        raise Refused(
+            "Runner token KMS key must be a customer-managed key ARN in the selected account/region"
+        )
     return config
 
 

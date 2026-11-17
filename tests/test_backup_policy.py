@@ -119,6 +119,14 @@ class BackupPolicyTests(unittest.TestCase):
                 if "staging" in resource:
                     self.assertFalse(permits(self.policy, action, resource.replace("staging", "production")))
 
+    def test_runner_kms_inventory_permission_is_exact_and_optional(self):
+        key_arn = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222"
+        policy = backup_policy({**CONFIG, "runner_token_kms_key_arn": key_arn})
+        self.assertTrue(permits(policy, "kms:DescribeKey", key_arn))
+        self.assertTrue(permits(policy, "kms:ListResourceTags", key_arn))
+        self.assertFalse(permits(policy, "kms:DescribeKey", key_arn.replace("123456789012", "999999999999")))
+        self.assertFalse(permits(self.policy, "kms:DescribeKey", key_arn))
+
     def test_invalid_config_is_rejected_without_mutating_input(self):
         original = copy.deepcopy(CONFIG)
         backup_policy(CONFIG)

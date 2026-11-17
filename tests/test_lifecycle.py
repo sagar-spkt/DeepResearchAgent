@@ -981,6 +981,10 @@ class ScopeRegressionTests(unittest.TestCase):
                 "alert_kms_key_arn",
                 "arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111",
             ),
+            (
+                "runner_token_kms_key_arn",
+                "arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222",
+            ),
         ):
             with self.subTest(key=key):
                 changed = {**CONFIG, key: value}

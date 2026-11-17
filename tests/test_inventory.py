@@ -304,8 +304,8 @@ class InventoryTests(unittest.TestCase):
     def setUp(self):
         self.clients, self.fixtures = fixture_clients()
 
-    def collect(self):
-        return InventoryCollector(CONFIG, self.clients, clock=lambda: 100000).collect()
+    def collect(self, config=CONFIG):
+        return InventoryCollector(config, self.clients, clock=lambda: 100000).collect()
 
     def test_leftover_administrator_or_backup_role_blocks_runtime_completion(self):
         for suffix in ("cluster-admin", "clickhouse-backup"):
@@ -386,6 +386,68 @@ class InventoryTests(unittest.TestCase):
             self.fixtures["calls"],
         )
         self.assertNotIn("list_topics", {op for _service, op, _kwargs in self.fixtures["calls"]})
+
+    def test_runner_token_key_blocks_closeout_until_scheduled_for_deletion(self):
+        runner_key = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-4222-8222-222222222222"
+        config = {**CONFIG, "runner_token_kms_key_arn": runner_key}
+        runner_state = ["PendingDeletion"]
+
+        def describe_key(kwargs):
+            if kwargs["KeyId"] == runner_key:
+                return {
+                    "KeyMetadata": {
+                        "Arn": runner_key,
+                        "KeyId": runner_key.rsplit("/", 1)[1],
+                        "KeyState": runner_state[0],
+                        "KeyManager": "CUSTOMER",
+                        "KeyUsage": "ENCRYPT_DECRYPT",
+                        "Description": "One-time GitHub runner registration token for session-1",
+                        "DeletionDate": datetime(2030, 1, 1, tzinfo=timezone.utc),
+                    }
+                }
+            return {
+                "KeyMetadata": {
+                    "Arn": CONFIG["alert_kms_key_arn"],
+                    "KeyId": CONFIG["alert_kms_key_arn"].rsplit("/", 1)[1],
+                    "KeyState": "Enabled",
+                    "KeyManager": "CUSTOMER",
+                    "KeyUsage": "ENCRYPT_DECRYPT",
+                    "KeySpec": "SYMMETRIC_DEFAULT",
+                    "Description": "Encryption key for deepresearch-staging expiry alert topic",
+                }
+            }
+
+        self.fixtures["direct"][("kms", "describe_key")] = describe_key
+        self.fixtures["direct"][("kms", "list_resource_tags")] = lambda kwargs: {
+            "Tags": [
+                {"TagKey": key, "TagValue": value}
+                for key, value in (
+                    {**TAGS, "Component": "github-runner-token-key"}
+                    if kwargs["KeyId"] == runner_key
+                    else {**TAGS, "Component": "expiry-alerts"}
+                ).items()
+            ]
+        }
+        pending = self.collect(config)
+        self.assertTrue(pending["inventory_complete"], pending["errors"])
+        self.assertTrue(pending["management_gone"], pending["management_remaining"])
+        self.assertIn(
+            {
+                "kind": "kms-key-pending-deletion",
+                "id": runner_key,
+                "billed": True,
+                "deletion_date": "2030-01-01T00:00:00+00:00",
+            },
+            pending["retained_resources"],
+        )
+
+        runner_state[0] = "Enabled"
+        active = self.collect(config)
+        self.assertFalse(active["management_gone"])
+        self.assertIn(
+            {"kind": "runner-token-kms-key", "id": runner_key, "state": "Enabled"},
+            active["management_remaining"],
+        )
 
     def test_unencrypted_or_invalid_alert_key_blocks_inventory_completion(self):
         self.fixtures["direct"][("sns", "get_topic_attributes")] = {

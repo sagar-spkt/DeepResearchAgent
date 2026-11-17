@@ -45,6 +45,12 @@ def backup_policy(config):
     ])
     allow("VerifyAlertTopic", ["sns:GetTopicAttributes"], [config["alert_topic_arn"]])
     allow("VerifyAlertKey", ["kms:DescribeKey", "kms:ListResourceTags", "kms:GetKeyRotationStatus"], [config["alert_kms_key_arn"]])
+    if config.get("runner_token_kms_key_arn"):
+        allow(
+            "VerifyRunnerTokenKey",
+            ["kms:DescribeKey", "kms:ListResourceTags"],
+            [config["runner_token_kms_key_arn"]],
+        )
     allow("DescribeBackupDatabase", ["rds:DescribeDBInstances"], [database])
     allow("VerifySnapshot", ["rds:DescribeDBSnapshots", "rds:ListTagsForResource"], [database, snapshot])
     request_tags = {"aws:RequestTag/" + key: value for key, value in {

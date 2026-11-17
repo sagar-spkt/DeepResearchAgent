@@ -55,8 +55,18 @@ variable "availability_zone" {
 }
 
 variable "enable_github_runner" {
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
+  description = "Create the session-scoped token KMS key and allow a runner launch."
+}
+variable "launch_github_runner" {
+  type        = bool
+  default     = false
+  description = "Launch the one-job EC2 runner after its token parameter is staged."
+  validation {
+    condition     = !var.launch_github_runner || var.enable_github_runner
+    error_message = "Enable the runner key before launching the EC2 runner."
+  }
 }
 variable "github_repository" {
   type        = string
@@ -70,7 +80,7 @@ variable "github_repository" {
 variable "github_runner_ami_id" {
   type        = string
   default     = ""
-  description = "Reviewed immutable x86_64 Linux AMI ID with Docker, AWS CLI, git, curl, jq and Python 3 installed."
+  description = "Reviewed immutable x86_64 Linux AMI ID with Docker, AWS CLI, git, curl, tar, sha256sum, systemd and Python 3 installed."
   validation {
     condition     = var.github_runner_ami_id == "" || can(regex("^ami-[0-9a-f]{8,17}$", var.github_runner_ami_id))
     error_message = "Provide an immutable AMI ID."
@@ -168,8 +178,9 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 locals {
-  runner_enabled       = var.enable_github_runner
-  runner_parameter_arn = "arn:aws:ssm:${var.region}:${var.account_id}:parameter${var.github_runner_registration_parameter}"
+  runner_enabled          = var.enable_github_runner
+  runner_instance_enabled = var.enable_github_runner && var.launch_github_runner
+  runner_parameter_arn    = "arn:aws:ssm:${var.region}:${var.account_id}:parameter${var.github_runner_registration_parameter}"
   runner_tags = {
     Project   = "deepresearch", Environment = var.environment, Session = var.session_id,
     Component = "github-actions-runner", ManagedBy = "terraform"
@@ -177,13 +188,17 @@ locals {
 }
 
 resource "aws_kms_key" "runner_token" {
+  count                   = local.runner_enabled ? 1 : 0
   description             = "One-time GitHub runner registration token for ${var.session_id}"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+  tags = {
+    Component = "github-runner-token-key"
+  }
 }
 
 data "aws_iam_policy_document" "runner_assume" {
-  count = local.runner_enabled ? 1 : 0
+  count = local.runner_instance_enabled ? 1 : 0
   statement {
     actions = ["sts:AssumeRole"]
     principals {
@@ -193,20 +208,20 @@ data "aws_iam_policy_document" "runner_assume" {
   }
 }
 resource "aws_iam_role" "runner" {
-  count              = local.runner_enabled ? 1 : 0
+  count              = local.runner_instance_enabled ? 1 : 0
   name               = "${local.name}-runner"
   assume_role_policy = data.aws_iam_policy_document.runner_assume[0].json
   tags               = local.runner_tags
 }
 data "aws_iam_policy_document" "runner" {
-  count = local.runner_enabled ? 1 : 0
+  count = local.runner_instance_enabled ? 1 : 0
   statement {
     actions   = ["ssm:GetParameter", "ssm:DeleteParameter"]
     resources = [local.runner_parameter_arn]
   }
   statement {
     actions   = ["kms:Decrypt"]
-    resources = [aws_kms_key.runner_token.arn]
+    resources = [aws_kms_key.runner_token[0].arn]
     condition {
       test     = "StringEquals"
       variable = "kms:ViaService"
@@ -239,18 +254,18 @@ data "aws_iam_policy_document" "runner" {
   }
 }
 resource "aws_iam_role_policy" "runner" {
-  count  = local.runner_enabled ? 1 : 0
+  count  = local.runner_instance_enabled ? 1 : 0
   role   = aws_iam_role.runner[0].id
   policy = data.aws_iam_policy_document.runner[0].json
 }
 resource "aws_iam_instance_profile" "runner" {
-  count = local.runner_enabled ? 1 : 0
+  count = local.runner_instance_enabled ? 1 : 0
   name  = "${local.name}-runner"
   role  = aws_iam_role.runner[0].name
 }
 
 resource "aws_instance" "runner" {
-  count                                = local.runner_enabled ? 1 : 0
+  count                                = local.runner_instance_enabled ? 1 : 0
   ami                                  = var.github_runner_ami_id
   instance_type                        = "m6i.xlarge"
   subnet_id                            = aws_subnet.executor.id
@@ -271,25 +286,26 @@ resource "aws_instance" "runner" {
     volume_size           = 40
     delete_on_termination = true
   }
-  tags = local.runner_tags
+  tags       = local.runner_tags
+  depends_on = [aws_iam_role_policy.runner]
   lifecycle {
     precondition {
-      condition     = !local.runner_enabled || (var.github_runner_ami_id != "" && var.github_repository != "" && var.github_runner_registration_parameter != "")
-      error_message = "Enabling the runner requires a pinned AMI, exact repository, and pre-created token parameter name."
+      condition     = !local.runner_instance_enabled || (var.github_runner_ami_id != "" && var.github_repository != "" && var.github_runner_registration_parameter != "")
+      error_message = "Launching the runner requires a pinned AMI, exact repository, and pre-created token parameter name."
     }
     precondition {
-      condition     = !local.runner_enabled || var.github_runner_registration_parameter == "/deepresearch/runner/${var.session_id}/registration"
+      condition     = !local.runner_instance_enabled || var.github_runner_registration_parameter == "/deepresearch/runner/${var.session_id}/registration"
       error_message = "Runner token parameter must match the current session-scoped name."
     }
   }
 }
 
 output "github_runner_instance_id" {
-  value       = try(aws_instance.runner[0].id, null)
+  value       = local.runner_instance_enabled ? try(aws_instance.runner[0].id, null) : null
   description = "Ephemeral runner instance ID, if enabled."
 }
 output "github_runner_token_kms_key_arn" {
-  value       = aws_kms_key.runner_token.arn
+  value       = try(aws_kms_key.runner_token[0].arn, null)
   description = "KMS key ARN required to securely stage the one-time runner token."
 }
 
