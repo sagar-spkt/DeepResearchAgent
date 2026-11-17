@@ -2,7 +2,7 @@
 
 Application, infrastructure, and repository checks run on direct pushes to every branch, pull requests, and manual dispatch. This lets a direct-to-main workflow use check results from the exact commit without requiring a pull request. The main ruleset continues to require all seven CI contexts.
 
-The staging `Deploy` workflow is a gated application installer: it builds/publishes images and applies Helm/DNS to an existing EKS cluster from a private self-hosted runner. It does not provision EKS/RDS, install the runner, or establish recovery acceptance. The backup/shutdown and restore workflows remain preparation-only and fail closed before creating AWS clients. Terraform source defines app-scoped staging OIDC permissions plus a separate exact-key lifecycle-lease policy; the lease policy is not yet applied to the live AWS role. Production has no AWS permissions.
+The staging `Deploy` workflow is a gated application installer: it builds/publishes images and applies Helm/DNS to an existing EKS cluster from a private self-hosted runner. It does not provision EKS/RDS, install the runner, or establish recovery acceptance. The backup/shutdown and restore workflows remain preparation-only and fail closed before creating AWS clients. The staging OIDC role has app-scoped permissions plus a separate exact-key lifecycle-lease policy; the production OIDC role has no AWS permissions.
 
 ## Solo production release authorization
 
