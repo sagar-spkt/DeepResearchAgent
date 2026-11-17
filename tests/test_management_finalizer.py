@@ -6,7 +6,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lifecycle.core import Refused
 from lifecycle.management_finalizer import inspect_management_destroy
 
-
 CONFIG = {
     "account_id": "123456789012",
     "region": "us-east-1",

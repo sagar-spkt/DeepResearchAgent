@@ -5,14 +5,14 @@ import unittest
 from scripts.staging_lifecycle_lease import (
     LeaseError,
     acquire,
-    assert_owner,
     acquire_finalizer,
     assert_finalizer_owner,
+    assert_owner,
     deployment_marker_key,
     mark_deployment_started,
     release,
-    renew_finalizer,
     renew,
+    renew_finalizer,
 )
 
 
