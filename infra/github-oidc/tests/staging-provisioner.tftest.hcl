@@ -102,6 +102,11 @@ run "staging_provisioning_roles_are_stack_and_session_bound" {
   }
 
   assert {
+    condition     = one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "AuthorizeOnlyTaggedManagementEgressRules"]).Resource == "arn:aws:ec2:${var.region}:123456789012:security-group-rule/*" && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "AuthorizeOnlyTaggedManagementEgressRules"]).Condition.StringEquals["aws:RequestTag/Session"] == "$${aws:PrincipalTag/Session}" && one([for statement in jsondecode(aws_iam_policy.staging_provisioner["management-egress"].policy).Statement : statement if statement.Sid == "AuthorizeOnlyTaggedManagementEgressRules"]).Condition["ForAllValues:StringEquals"]["aws:TagKeys"] == ["Project", "Environment", "Session", "Component", "ManagedBy"]
+    error_message = "Management egress rules may be authorized only when the exact session, network component, and Terraform tags are present."
+  }
+
+  assert {
     condition     = !strcontains(aws_iam_policy.staging_provisioner["runtime-service"].policy, "rds:DeleteDBInstance") && !strcontains(aws_iam_policy.staging_provisioner["runtime-service"].policy, "rds:DeleteDBSnapshot")
     error_message = "Provisioning must preserve the staging database and snapshots."
   }

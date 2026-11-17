@@ -619,6 +619,28 @@ locals {
       Resource  = "*"
       Condition = { StringEquals = merge(local.staging_session_resource_tags, { "aws:RequestedRegion" = var.region }) }
     },
+    {
+      Sid      = "AuthorizeOnlyTaggedManagementEgressRules"
+      Effect   = "Allow"
+      Action   = ["ec2:AuthorizeSecurityGroupEgress"]
+      Resource = "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:security-group-rule/*"
+      Condition = {
+        StringEquals = merge(local.staging_resource_tags, {
+          "aws:RequestTag/Component" = "management-network"
+          "aws:RequestTag/ManagedBy" = "terraform"
+          "aws:RequestedRegion"      = var.region
+          "ec2:Region"               = var.region
+        })
+        "ForAllValues:StringEquals" = { "aws:TagKeys" = ["Project", "Environment", "Session", "Component", "ManagedBy"] }
+        Null = {
+          "aws:RequestTag/Project"     = "false"
+          "aws:RequestTag/Environment" = "false"
+          "aws:RequestTag/Session"     = "false"
+          "aws:RequestTag/Component"   = "false"
+          "aws:RequestTag/ManagedBy"   = "false"
+        }
+      }
+    },
   ]
   staging_management_runner_statements = [
     {
