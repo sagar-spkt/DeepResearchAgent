@@ -3,6 +3,12 @@ set -Eeuo pipefail
 set +x
 export AWS_DEFAULT_REGION=us-east-1
 bootstrap_complete=false
+bootstrap_step=initialize
+
+set_bootstrap_step() {
+  bootstrap_step="$1"
+  printf '[runner-bootstrap] %s\n' "$bootstrap_step" >/dev/console 2>/dev/null || true
+}
 
 terminate_self() {
   local token instance_id
@@ -14,6 +20,7 @@ on_exit() {
   local status=$?
   trap - EXIT
   if [[ "$bootstrap_complete" != true ]]; then
+    printf '[runner-bootstrap] failed at %s with exit %s\n' "$bootstrap_step" "$status" >/dev/console 2>/dev/null || true
     rm -f /run/actions-runner/token /opt/actions-runner/configure-once.sh || true
     terminate_self
   fi
@@ -22,6 +29,7 @@ on_exit() {
 trap on_exit EXIT
 
 # Install the deadline and the runner-user-callable completion hook before bootstrap can fail.
+set_bootstrap_step "install 85 minute watchdog"
 cat >/usr/local/sbin/actions-runner-terminate <<'HOOK'
 #!/bin/bash
 set -eu
@@ -52,14 +60,18 @@ systemctl enable --now actions-runner-watchdog.timer
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
+  set_bootstrap_step "rewrite Ubuntu package sources to HTTPS"
   sed -i -E '/^URIs:/s#http://#https://#g' /etc/apt/sources.list.d/ubuntu.sources
   if grep -Eq '^URIs: http://' /etc/apt/sources.list.d/ubuntu.sources; then
     echo "Ubuntu package sources must use HTTPS from the private runner subnet." >&2
     exit 1
   fi
-  apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl docker.io docker-buildx git gnupg python3 tar unzip
+  set_bootstrap_step "update Ubuntu package indexes"
+  apt-get -o Acquire::Retries=3 update
+  set_bootstrap_step "install Docker and AWS CLI verification tools"
+  apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl docker.io docker-buildx git gnupg python3 tar unzip
   aws_cli_version=2.40.3
+  set_bootstrap_step "verify and install pinned AWS CLI $aws_cli_version"
   installer_dir=$(mktemp -d /run/aws-cli-install.XXXXXX)
   chmod 700 "$installer_dir"
   install -d -m 700 "$installer_dir/gnupg"
@@ -122,6 +134,7 @@ runner_group=$(id -gn runner)
 id -nG runner | tr ' ' '\n' | grep -Fx docker >/dev/null
 docker buildx version >/dev/null
 docker_ready=false
+set_bootstrap_step "wait for Docker and Buildx"
 for attempt in {1..30}; do
   if su - runner -c 'docker info >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1'; then
     docker_ready=true
@@ -131,6 +144,7 @@ for attempt in {1..30}; do
 done
 if [[ "$docker_ready" != true ]]; then exit 1; fi
 install -d -o runner -g "$runner_group" /opt/actions-runner /run/actions-runner
+set_bootstrap_step "download and verify GitHub Actions runner"
 archive=/run/actions-runner/runner.tar.gz
 token_file=/run/actions-runner/token
 chmod 700 /run/actions-runner
@@ -143,6 +157,7 @@ rm -f "$archive"
 # IAM/profile changes can take time to propagate after RunInstances. Keep the token
 # response out of logs and only configure the runner after both one-time operations work.
 retrieved=false
+set_bootstrap_step "retrieve one-time registration token"
 for attempt in {1..12}; do
   if aws --cli-connect-timeout 5 --cli-read-timeout 10 ssm get-parameter --name '${parameter_name}' --with-decryption --query Parameter.Value --output text >"$token_file" 2>/dev/null; then
     retrieved=true
@@ -166,6 +181,7 @@ chown runner:"$runner_group" "$token_file"
 chmod 600 "$token_file"
 chown root:docker /run/actions-runner
 chmod 710 /run/actions-runner
+set_bootstrap_step "configure ephemeral GitHub runner"
 cat >/opt/actions-runner/configure-once.sh <<'CONFIG'
 #!/bin/bash
 set -Eeuo pipefail
@@ -195,5 +211,6 @@ ExecStart=/opt/actions-runner/run.sh
 Restart=no
 UNIT
 systemctl daemon-reload
+set_bootstrap_step "start ephemeral GitHub runner service"
 systemctl enable --now actions-runner.service
 bootstrap_complete=true
