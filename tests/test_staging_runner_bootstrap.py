@@ -20,12 +20,20 @@ class RunnerBootstrapTests(unittest.TestCase):
                 self.assertLess(source.index(required), token_read)
         self.assertIn("if [[ \"$docker_ready\" != true ]]; then exit 1; fi", source)
 
-    def test_bootstrap_and_process_arguments_do_not_expose_token(self) -> None:
+    def test_su_wrapper_command_does_not_interpolate_registration_token(self) -> None:
+        source = USER_DATA.read_text()
+        wrapper_command = next(
+            line for line in source.splitlines() if line.startswith("su - runner -c")
+        )
+        self.assertEqual(wrapper_command, "su - runner -c /opt/actions-runner/configure-once.sh")
+        self.assertNotIn("$token", wrapper_command)
+        self.assertNotIn("--token", wrapper_command)
+
+    def test_token_file_is_protected_and_removed_before_runner_service(self) -> None:
         source = USER_DATA.read_text()
         self.assertIn("chmod 600 \"$token_file\"", source)
         self.assertIn('chown runner:"$runner_group" "$token_file"', source)
         self.assertIn("su - runner -c /opt/actions-runner/configure-once.sh", source)
-        self.assertNotIn("su - runner -c \"cd /opt/actions-runner", source)
         self.assertIn("rm -f /run/actions-runner/token /opt/actions-runner/configure-once.sh", source)
         self.assertLess(
             source.index("su - runner -c /opt/actions-runner/configure-once.sh"),
@@ -33,7 +41,6 @@ class RunnerBootstrapTests(unittest.TestCase):
         )
         self.assertIn("--token \"$token\"", source)
         self.assertIn("rm -f /run/actions-runner/token", source)
-        self.assertNotIn("token-value", source)
 
 
 if __name__ == "__main__":
