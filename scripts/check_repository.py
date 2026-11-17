@@ -72,10 +72,25 @@ def check(root=ROOT):
                 # Checked-in YAML intentionally uses its JSON-compatible subset.
                 data = json.loads(content)
                 if "workflows/" in relative:
-                    if data.get("permissions") != {"contents": "read"}:
-                        errors.append(f"{relative}: CI must have read-only permissions")
+                    workflow_permissions = data.get("permissions", {})
+                    if (
+                        not isinstance(workflow_permissions, dict)
+                        or workflow_permissions.get("contents") != "read"
+                        or any(value != "read" for value in workflow_permissions.values())
+                    ):
+                        errors.append(f"{relative}: workflow permissions must be read-only")
                     if not set(data.get("on", {})) <= {"push", "pull_request", "workflow_dispatch"}:
                         errors.append(f"{relative}: unsupported CI event")
+                    for job_name, job in data.get("jobs", {}).items():
+                        job_permissions = job.get("permissions")
+                        if job_permissions is not None and not (
+                            relative == ".github/workflows/deploy.yml"
+                            and job_name == "deploy"
+                            and job_permissions == {"contents": "read", "id-token": "write"}
+                        ):
+                            errors.append(
+                                f"{relative}: job {job_name} has permissions outside its approved scope"
+                            )
                     for job in data.get("jobs", {}).values():
                         for step in job.get("steps", []):
                             if "uses" in step and not re.fullmatch(

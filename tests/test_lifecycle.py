@@ -437,18 +437,34 @@ class ScopeRegressionTests(unittest.TestCase):
     def addon_destroy_plan(self, component, addon_name):
         plan = tfplan()
         address = "aws_eks_addon." + component
-        plan["configuration"]["root_module"]["resources"] = [{
-            "address": address, "type": "aws_eks_addon", "mode": "managed",
-            "provider_config_key": "aws",
-        }]
-        plan["resource_changes"] = [{
-            "address": address, "type": "aws_eks_addon", "mode": "managed",
-            "provider_name": "registry.terraform.io/hashicorp/aws",
-            "change": {"actions": ["delete"], "before": {
-                "cluster_name": CONFIG["cluster_name"], "addon_name": addon_name,
-                "tags_all": {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"},
-            }},
-        }]
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": address,
+                "type": "aws_eks_addon",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            }
+        ]
+        plan["resource_changes"] = [
+            {
+                "address": address,
+                "type": "aws_eks_addon",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "cluster_name": CONFIG["cluster_name"],
+                        "addon_name": addon_name,
+                        "tags_all": {
+                            "Project": "deepresearch",
+                            "Environment": "staging",
+                            "Session": "session-1",
+                        },
+                    },
+                },
+            }
+        ]
         return plan
 
     def test_network_addons_are_destroyable_only_for_the_expected_cluster_and_name(self):
@@ -456,7 +472,10 @@ class ScopeRegressionTests(unittest.TestCase):
             with self.subTest(addon=component):
                 plan = self.addon_destroy_plan(component, addon_name)
                 self.assertEqual(["aws_eks_addon." + component], inspect_destroy(plan, CONFIG))
-                for field, invalid in [("cluster_name", "deepresearch-production"), ("addon_name", "other")]:
+                for field, invalid in [
+                    ("cluster_name", "deepresearch-production"),
+                    ("addon_name", "other"),
+                ]:
                     plan = self.addon_destroy_plan(component, addon_name)
                     plan["resource_changes"][0]["change"]["before"][field] = invalid
                     with self.assertRaisesRegex(Refused, "EKS addon identity mismatch"):
@@ -465,31 +484,166 @@ class ScopeRegressionTests(unittest.TestCase):
     def test_clickhouse_backup_identity_teardown_rejects_other_service_accounts(self):
         plan = tfplan()
         address = "aws_eks_pod_identity_association.clickhouse_backup"
-        plan["configuration"]["root_module"]["resources"] = [{
-            "address": address, "type": "aws_eks_pod_identity_association", "mode": "managed",
-            "provider_config_key": "aws",
-        }]
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": address,
+                "type": "aws_eks_pod_identity_association",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            }
+        ]
         before = {
-            "cluster_name": CONFIG["cluster_name"], "namespace": "research",
+            "cluster_name": CONFIG["cluster_name"],
+            "namespace": "research",
             "service_account": "research-clickhouse-backup",
             "role_arn": "arn:aws:iam::123456789012:role/deepresearch-staging-clickhouse-backup",
-            "tags_all": {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"},
+            "tags_all": {
+                "Project": "deepresearch",
+                "Environment": "staging",
+                "Session": "session-1",
+            },
         }
-        plan["resource_changes"] = [{
-            "address": address, "type": "aws_eks_pod_identity_association", "mode": "managed",
-            "provider_name": "registry.terraform.io/hashicorp/aws",
-            "change": {"actions": ["delete"], "before": before},
-        }]
+        plan["resource_changes"] = [
+            {
+                "address": address,
+                "type": "aws_eks_pod_identity_association",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {"actions": ["delete"], "before": before},
+            }
+        ]
         self.assertEqual([address], inspect_destroy(plan, CONFIG))
         before["service_account"] = "research-observability"
         with self.assertRaisesRegex(Refused, "Pod Identity binding mismatch"):
             inspect_destroy(plan, CONFIG)
 
+        plan = tfplan()
+        address = "aws_eks_pod_identity_association.load_balancer_controller"
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": address,
+                "type": "aws_eks_pod_identity_association",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            }
+        ]
+        plan["resource_changes"] = [
+            {
+                "address": address,
+                "type": "aws_eks_pod_identity_association",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "cluster_name": CONFIG["cluster_name"],
+                        "namespace": "kube-system",
+                        "service_account": "aws-load-balancer-controller",
+                        "role_arn": "arn:aws:iam::123456789012:role/deepresearch-staging-load-balancer-controller",
+                        "tags_all": {
+                            "Project": "deepresearch",
+                            "Environment": "staging",
+                            "Session": "session-1",
+                        },
+                    },
+                },
+            }
+        ]
+        self.assertEqual([address], inspect_destroy(plan, CONFIG))
+
+    def test_github_eks_access_teardown_is_limited_to_research_namespace(self):
+        plan = tfplan()
+        entry = "aws_eks_access_entry.github_actions[0]"
+        association = "aws_eks_access_policy_association.github_actions[0]"
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": "aws_eks_access_entry.github_actions",
+                "type": "aws_eks_access_entry",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            },
+            {
+                "address": "aws_eks_access_policy_association.github_actions",
+                "type": "aws_eks_access_policy_association",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            },
+        ]
+        principal = "arn:aws:iam::123456789012:role/deepresearch-staging-github-oidc"
+        plan["resource_changes"] = [
+            {
+                "address": entry,
+                "type": "aws_eks_access_entry",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "principal_arn": principal,
+                        "cluster_name": CONFIG["cluster_name"],
+                        "type": "STANDARD",
+                    },
+                },
+            },
+            {
+                "address": association,
+                "type": "aws_eks_access_policy_association",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "principal_arn": principal,
+                        "cluster_name": CONFIG["cluster_name"],
+                        "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy",
+                        "access_scope": [{"type": "namespace", "namespaces": ["research"]}],
+                    },
+                },
+            },
+        ]
+        self.assertEqual([entry, association], inspect_destroy(plan, CONFIG))
+        plan["resource_changes"][1]["change"]["before"]["access_scope"][0]["namespaces"] = [
+            "default"
+        ]
+        with self.assertRaisesRegex(Refused, "namespace-scoped edit"):
+            inspect_destroy(plan, CONFIG)
+
+    def test_load_balancer_controller_policy_is_exact_and_destroyable(self):
+        plan = tfplan()
+        address = "aws_iam_policy.load_balancer_controller"
+        plan["configuration"]["root_module"]["resources"] = [
+            {
+                "address": address,
+                "type": "aws_iam_policy",
+                "mode": "managed",
+                "provider_config_key": "aws",
+            }
+        ]
+        plan["resource_changes"] = [
+            {
+                "address": address,
+                "type": "aws_iam_policy",
+                "mode": "managed",
+                "provider_name": "registry.terraform.io/hashicorp/aws",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "name": "deepresearch-staging-load-balancer-controller",
+                        "arn": "arn:aws:iam::123456789012:policy/deepresearch-staging-load-balancer-controller",
+                        "tags_all": {
+                            "Project": "deepresearch",
+                            "Environment": "staging",
+                            "Session": "session-1",
+                        },
+                    },
+                },
+            }
+        ]
+        self.assertEqual([address], inspect_destroy(plan, CONFIG))
+
     def admin_destroy_plan(self):
         plan = tfplan()
-        plan["variables"]["operator_principal_arn"] = {
-            "value": CONFIG["operator_principal_arn"]
-        }
+        plan["variables"]["operator_principal_arn"] = {"value": CONFIG["operator_principal_arn"]}
         tags = {"Project": "deepresearch", "Environment": "staging", "Session": "session-1"}
         role_arn = "arn:aws:iam::123456789012:role/deepresearch-staging-cluster-admin"
         trust = {
@@ -556,9 +710,7 @@ class ScopeRegressionTests(unittest.TestCase):
 
     def test_short_lived_eks_admin_destroy_rejects_wrong_trust_and_access_role(self):
         plan = self.admin_destroy_plan()
-        trust = json.loads(
-            plan["resource_changes"][0]["change"]["before"]["assume_role_policy"]
-        )
+        trust = json.loads(plan["resource_changes"][0]["change"]["before"]["assume_role_policy"])
         trust["Statement"][0]["Principal"]["AWS"] = "arn:aws:iam::123456789012:role/other"
         plan["resource_changes"][0]["change"]["before"]["assume_role_policy"] = json.dumps(trust)
         with self.assertRaisesRegex(Refused, "trust must match"):

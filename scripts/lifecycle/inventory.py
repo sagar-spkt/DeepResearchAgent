@@ -50,14 +50,25 @@ def error_code(exc):
 
 
 class InventoryCollector:
-    def __init__(self, config, clients, clock=time.time):
+    def __init__(
+        self,
+        config,
+        clients,
+        clock=time.time,
+        bootstrap_cleanup=False,
+        bootstrap_final_required=False,
+    ):
         self.config = validate_config(config)
         self.clients, self.clock = clients, clock
-        self.errors, self.runtime, self.retained = [], [], []
+        self.bootstrap_cleanup = bootstrap_cleanup
+        self.bootstrap_final_required = bootstrap_final_required
+        self.errors, self.runtime, self.management, self.retained = [], [], [], []
         self.name = "deepresearch-" + config["environment"]
         self.cluster = config["cluster_name"]
         self.account, self.region = config["account_id"], config["region"]
-        self.vpcs, self.subnets, self.instances, self.interfaces = set(), set(), set(), set()
+        self.vpcs, self.management_vpcs = set(), set()
+        self.subnets, self.management_subnets = set(), set()
+        self.instances, self.interfaces, self.management_interfaces = set(), set(), set()
         self.control_verified = False
 
     def call(self, label, function, absent=()):
@@ -165,8 +176,10 @@ class InventoryCollector:
             "started_at_epoch": started,
             "inventory_complete": complete,
             "runtime_gone": complete and not self.runtime,
+            "management_gone": complete and not self.management,
             "retained_accounted": complete,
             "runtime_remaining": self.runtime,
+            "management_remaining": self.management,
             "retained_resources": self.retained,
             "errors": self.errors,
             "scope": "Enumerated deepresearch runtime/foundation/expiry resources in the selected account and region; not an account-wide zero-billing assertion",
@@ -183,47 +196,78 @@ class InventoryCollector:
                 if self.matches(value, "vpc:" + vpc["VpcId"]):
                     self.require(vpc.get("OwnerId") == self.account, "vpc-owner")
                     self.vpcs.add(vpc["VpcId"])
-                    self.record(self.runtime, "vpc", vpc["VpcId"], state=vpc.get("State"))
+                    if value.get("Component") == "management-network":
+                        self.management_vpcs.add(vpc["VpcId"])
+                        self.record(self.management, "vpc", vpc["VpcId"], state=vpc.get("State"))
+                    else:
+                        self.record(self.runtime, "vpc", vpc["VpcId"], state=vpc.get("State"))
         for subnet in self.pages("ec2", "describe_subnets", "Subnets"):
             value = tags(subnet.get("Tags"))
             related = subnet.get("VpcId") in self.vpcs
             if related or value.get("Project") == "deepresearch":
                 if self.matches(value, "subnet:" + subnet["SubnetId"], related):
                     self.require(subnet.get("OwnerId") == self.account, "subnet-owner")
-                    self.subnets.add(subnet["SubnetId"])
-                    self.record(self.runtime, "subnet", subnet["SubnetId"])
+                    if (
+                        subnet.get("VpcId") in self.management_vpcs
+                        or value.get("Component") == "management-network"
+                    ):
+                        self.management_subnets.add(subnet["SubnetId"])
+                        self.record(self.management, "subnet", subnet["SubnetId"])
+                    else:
+                        self.subnets.add(subnet["SubnetId"])
+                        self.record(self.runtime, "subnet", subnet["SubnetId"])
         for eni in self.pages("ec2", "describe_network_interfaces", "NetworkInterfaces"):
             value = tags(eni.get("TagSet"))
+            management_related = eni.get("VpcId") in self.management_vpcs
             related = eni.get("VpcId") in self.vpcs or self.cluster_related(value)
             if related or value.get("Project") == "deepresearch":
                 self.require(eni.get("OwnerId") == self.account, "eni-owner")
                 if value.get("Project") == "deepresearch" and not self.matches(value, "eni-tags"):
                     continue
-                self.interfaces.add(eni["NetworkInterfaceId"])
-                self.record(
-                    self.runtime,
-                    "network-interface",
-                    eni["NetworkInterfaceId"],
-                    state=eni.get("Status"),
-                )
+                if management_related or value.get("Component") == "management-network":
+                    self.management_interfaces.add(eni["NetworkInterfaceId"])
+                    self.record(
+                        self.management,
+                        "network-interface",
+                        eni["NetworkInterfaceId"],
+                        state=eni.get("Status"),
+                    )
+                else:
+                    self.interfaces.add(eni["NetworkInterfaceId"])
+                    self.record(
+                        self.runtime,
+                        "network-interface",
+                        eni["NetworkInterfaceId"],
+                        state=eni.get("Status"),
+                    )
         for nat in self.pages("ec2", "describe_nat_gateways", "NatGateways"):
             value = tags(nat.get("Tags"))
             if nat.get("VpcId") in self.vpcs or value.get("Project") == "deepresearch":
                 if value.get("Project") == "deepresearch":
                     self.matches(value, "nat-tags")
                 if nat.get("State") != "deleted":
-                    self.record(
-                        self.runtime, "nat-gateway", nat["NatGatewayId"], state=nat.get("State")
+                    target = (
+                        self.management
+                        if nat.get("VpcId") in self.management_vpcs
+                        else self.runtime
                     )
+                    self.record(target, "nat-gateway", nat["NatGatewayId"], state=nat.get("State"))
         # This operation is not pageable in EC2. Enumerate all addresses explicitly.
         addresses = self.call("ec2:describe_addresses", lambda: ec2.describe_addresses())
         for address in (addresses or {}).get("Addresses", []):
             value = tags(address.get("Tags"))
-            related = address.get("NetworkInterfaceId") in self.interfaces
+            management_related = (
+                address.get("NetworkInterfaceId") in self.management_interfaces
+                or value.get("Component") == "management-network"
+            )
+            related = (
+                address.get("NetworkInterfaceId") in self.interfaces | self.management_interfaces
+            )
             if related or value.get("Project") == "deepresearch":
                 if value.get("Project") == "deepresearch":
                     self.matches(value, "eip-tags")
-                self.record(self.runtime, "elastic-ip", address.get("AllocationId", "unknown"))
+                target = self.management if management_related else self.runtime
+                self.record(target, "elastic-ip", address.get("AllocationId", "unknown"))
             elif not address.get("AssociationId"):
                 self.errors.append(
                     {
@@ -440,6 +484,13 @@ class InventoryCollector:
         expected = {
             f"{self.name}-{self.config['session_id']}-{suffix}" for suffix in ("backup", "final")
         }
+        required = (
+            {f"{self.name}-{self.config['session_id']}-final"}
+            if self.bootstrap_cleanup and self.bootstrap_final_required
+            else set()
+            if self.bootstrap_cleanup
+            else expected
+        )
         observed = set()
         for snapshot in self.pages(
             "rds",
@@ -467,7 +518,10 @@ class InventoryCollector:
             )
             observed.add(snapshot["DBSnapshotIdentifier"])
             self.record(self.retained, "rds-snapshot", snapshot["DBSnapshotArn"], billed=True)
-        self.require(observed == expected, "required-backup-and-final-snapshots")
+        if self.bootstrap_cleanup:
+            self.require(required.issubset(observed), "required-bootstrap-final-snapshot")
+        else:
+            self.require(observed == expected, "required-backup-and-final-snapshots")
 
     def load_balancers(self):
         client = self.clients["elbv2"]
@@ -492,8 +546,14 @@ class InventoryCollector:
 
     def other_runtime(self):
         for suffix in (
-            "cluster", "cluster-admin", "node", "application", "observability",
-            "clickhouse-backup", "ebs-csi",
+            "cluster",
+            "cluster-admin",
+            "node",
+            "application",
+            "observability",
+            "clickhouse-backup",
+            "ebs-csi",
+            "load-balancer-controller",
         ):
             result = self.call(
                 "iam:get_role:" + suffix,
@@ -510,6 +570,16 @@ class InventoryCollector:
                 )
                 self.matches(role.get("Tags"), "iam-role-tags", True)
                 self.record(self.runtime, "iam-role", role["RoleName"])
+        expected_policy = self.name + "-load-balancer-controller"
+        for policy in self.pages("iam", "list_policies", "Policies", Scope="Local"):
+            if policy.get("PolicyName") != expected_policy:
+                continue
+            self.require(
+                self.arn(policy.get("Arn"), "iam", "policy/" + expected_policy),
+                "load-balancer-controller-policy-arn",
+            )
+            self.matches(policy.get("Tags"), "load-balancer-controller-policy-tags", True)
+            self.record(self.runtime, "iam-policy", policy["Arn"])
         for group in self.pages(
             "logs",
             "describe_log_groups",
@@ -854,10 +924,11 @@ def release_admission(store, config, lease, clients, plan, approved_hash):
     if not (
         evidence["inventory_complete"]
         and evidence["runtime_gone"]
+        and evidence.get("management_gone", False)
         and evidence["retained_accounted"]
     ):
         raise Refused(
-            "Fresh provider inventory is incomplete or runtime resources remain; admission retained"
+            "Fresh provider inventory is incomplete or runtime/management resources remain; admission retained"
         )
     instant = int(store.clock())
     if evidence["collected_at_epoch"] > instant or instant - evidence["started_at_epoch"] > 300:

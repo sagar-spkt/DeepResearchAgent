@@ -88,7 +88,9 @@ def validate_config(config):
     key_id = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     expected_key = rf"arn:aws:kms:{re.escape(config['region'])}:{config['account_id']}:key/{key_id}"
     if not re.fullmatch(expected_key, config["alert_kms_key_arn"]):
-        raise Refused("Alert KMS key must be a customer-managed key ARN in the selected account/region")
+        raise Refused(
+            "Alert KMS key must be a customer-managed key ARN in the selected account/region"
+        )
     return config
 
 
@@ -182,7 +184,16 @@ RUNTIME_ADDRESSES = {
     "aws_db_instance.main": "aws_db_instance",
     **{
         f"aws_iam_role.{name}": "aws_iam_role"
-        for name in ["cluster", "node", "application", "observability", "ebs_csi", "cluster_admin", "clickhouse_backup"]
+        for name in [
+            "cluster",
+            "node",
+            "application",
+            "observability",
+            "ebs_csi",
+            "cluster_admin",
+            "clickhouse_backup",
+            "load_balancer_controller",
+        ]
     },
     "aws_iam_role_policy_attachment.cluster": "aws_iam_role_policy_attachment",
     "aws_iam_role_policy_attachment.ebs_csi": "aws_iam_role_policy_attachment",
@@ -202,6 +213,10 @@ RUNTIME_ADDRESSES = {
     "aws_cloudwatch_log_group.cluster": "aws_cloudwatch_log_group",
     "aws_eks_access_entry.administrator": "aws_eks_access_entry",
     "aws_eks_access_policy_association.administrator": "aws_eks_access_policy_association",
+    "aws_eks_access_entry.github_actions[0]": "aws_eks_access_entry",
+    "aws_eks_access_policy_association.github_actions[0]": "aws_eks_access_policy_association",
+    "aws_iam_policy.load_balancer_controller": "aws_iam_policy",
+    "aws_iam_role_policy_attachment.load_balancer_controller": "aws_iam_role_policy_attachment",
     **{f"aws_eks_node_group.{name}": "aws_eks_node_group" for name in ["cpu", "gpu"]},
     **{
         f"aws_eks_addon.{name}": "aws_eks_addon"
@@ -209,7 +224,12 @@ RUNTIME_ADDRESSES = {
     },
     **{
         f"aws_eks_pod_identity_association.{name}": "aws_eks_pod_identity_association"
-        for name in ["application", "observability", "clickhouse_backup"]
+        for name in [
+            "application",
+            "observability",
+            "clickhouse_backup",
+            "load_balancer_controller",
+        ]
     },
 }
 UNTAGGED_TYPES = {
@@ -263,7 +283,7 @@ def inspect_destroy(plan_json, config):
     }
     for address, declaration in declarations.items():
         if (
-            allowed_bases.get(address) != declaration.get("type")
+            allowed_bases.get(re.sub(r"\[.*\]$", "", address)) != declaration.get("type")
             or declaration.get("provider_config_key") != "aws"
         ):
             raise Refused("Unapproved runtime declaration/provider: " + address)
@@ -419,6 +439,9 @@ def inspect_destroy(plan_json, config):
             elif address.endswith(".ebs_csi"):
                 role = name + "-ebs-csi"
                 policy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+            elif address.endswith(".load_balancer_controller"):
+                role = name + "-load-balancer-controller"
+                policy = f"arn:aws:iam::{account}:policy/{name}-load-balancer-controller"
             else:
                 role = name + "-node"
                 policy = "arn:aws:iam::aws:policy/" + json.loads(
@@ -427,6 +450,13 @@ def inspect_destroy(plan_json, config):
             require(
                 record.get("role") == role and record.get("policy_arn") == policy,
                 "IAM attachment identity mismatch",
+            )
+        elif kind == "aws_iam_policy":
+            expected = name + "-load-balancer-controller"
+            require(
+                record.get("name") == expected
+                and record.get("arn") == f"arn:aws:iam::{account}:policy/{expected}",
+                "Managed IAM policy identity mismatch",
             )
         elif kind == "aws_iam_role_policy":
             role = name + "-" + address.split(".")[-1].replace("_", "-")
@@ -452,20 +482,37 @@ def inspect_destroy(plan_json, config):
                 "CloudWatch log group name mismatch",
             )
         elif kind in ["aws_eks_access_entry", "aws_eks_access_policy_association"]:
-            principal = f"arn:aws:iam::{account}:role/{name}-cluster-admin"
+            github_entry = ".github_actions[" in address
+            principal = (
+                f"arn:aws:iam::{account}:role/deepresearch-staging-github-oidc"
+                if github_entry
+                else f"arn:aws:iam::{account}:role/{name}-cluster-admin"
+            )
             role = before.get("aws_iam_role.cluster_admin", {})
             require(
-                role.get("arn") == principal
+                (github_entry or role.get("arn") == principal)
                 and record.get("principal_arn") == principal
                 and record.get("cluster_name") == name,
                 "EKS administrator identity mismatch",
             )
+            if kind == "aws_eks_access_entry" and github_entry:
+                require(record.get("type") == "STANDARD", "Unexpected GitHub EKS access-entry type")
             if kind == "aws_eks_access_policy_association":
-                require(
-                    record.get("policy_arn")
-                    == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
-                    "Unexpected access policy",
-                )
+                if github_entry:
+                    scope = record.get("access_scope", [{}])[0]
+                    require(
+                        record.get("policy_arn")
+                        == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+                        and scope.get("type") == "namespace"
+                        and scope.get("namespaces") == ["research"],
+                        "GitHub EKS access must remain namespace-scoped edit",
+                    )
+                else:
+                    require(
+                        record.get("policy_arn")
+                        == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
+                        "Unexpected access policy",
+                    )
         elif kind == "aws_eks_node_group":
             component = address.split(".")[-1]
             require(
@@ -492,10 +539,12 @@ def inspect_destroy(plan_json, config):
             )
         elif kind == "aws_eks_pod_identity_association":
             suffix = address.split(".")[-1].replace("_", "-")
+            controller = suffix == "load-balancer-controller"
             require(
                 record.get("cluster_name") == name
-                and record.get("namespace") == "research"
-                and record.get("service_account") == "research-" + suffix
+                and record.get("namespace") == ("kube-system" if controller else "research")
+                and record.get("service_account")
+                == ("aws-load-balancer-controller" if controller else "research-" + suffix)
                 and record.get("role_arn") == f"arn:aws:iam::{account}:role/{name}-{suffix}",
                 "Pod Identity binding mismatch",
             )
@@ -649,6 +698,130 @@ def shutdown_execute(plan, approved_hash, adapter, runner=command):
         result["parent_approved_intent_hash"] = plan["parent_approved_intent_hash"]
     result["durable_shutdown_receipt"] = adapter.publish_receipt("shutdown", result)
     return result
+
+
+def prepare_bootstrap_cleanup(config, runtime_dir, var_file, output_plan, runner=command):
+    """Prepare a destroy plan for a failed first provision before app installation."""
+    validate_config(config)
+    runtime_dir = Path(runtime_dir).resolve()
+    if runtime_dir.name != "runtime" or runtime_dir.parent.name != "infra":
+        raise Refused("Only infra/runtime may be bootstrap-cleaned")
+    output_plan = Path(output_plan).resolve()
+    runner(
+        [
+            "terraform",
+            f"-chdir={runtime_dir}",
+            "plan",
+            "-destroy",
+            f"-var-file={Path(var_file).resolve()}",
+            f"-out={output_plan}",
+            "-input=false",
+            "-lock-timeout=60s",
+        ]
+    )
+    raw = json.loads(
+        runner(["terraform", f"-chdir={runtime_dir}", "show", "-json", str(output_plan)])
+    )
+    deletions = inspect_destroy(raw, config)
+    instant = now()
+    return {
+        "version": 1,
+        "operation": "bootstrap-cleanup",
+        "config": config,
+        "created_at": instant.isoformat(),
+        "expires_at": (instant + timedelta(minutes=30)).isoformat(),
+        "terraform_directory": str(runtime_dir),
+        "saved_plan": str(output_plan),
+        "saved_plan_sha256": file_hash(output_plan),
+        "deletions": deletions,
+        "preconditions": [
+            "first staging provision only; application release has not been installed",
+            "research namespace must be absent",
+            "runtime resources must match the exact account, environment, and session tags",
+            "RDS final snapshot is retained; foundation and management network are outside this plan",
+        ],
+        "retained": [
+            "foundation identity/data buckets/secrets/ECR/queues/KMS",
+            "RDS final snapshot",
+        ],
+    }
+
+
+def bootstrap_cleanup_execute(plan, approved_hash, adapter, runner=command):
+    approve(plan, approved_hash)
+    if plan.get("operation") != "bootstrap-cleanup":
+        raise Refused("Not a bootstrap cleanup plan")
+    if file_hash(plan["saved_plan"]) != plan["saved_plan_sha256"]:
+        raise Refused("Saved cleanup plan changed after review")
+    raw = json.loads(
+        runner(
+            [
+                "terraform",
+                f"-chdir={plan['terraform_directory']}",
+                "show",
+                "-json",
+                plan["saved_plan"],
+            ]
+        )
+    )
+    if inspect_destroy(raw, plan["config"]) != plan["deletions"]:
+        raise Refused("Bootstrap cleanup destroy scope changed")
+    adapter.verify_bootstrap_empty()
+    database_planned_for_deletion = "aws_db_instance.main" in plan["deletions"]
+    adapter.disable_database_protection_if_present(database_planned_for_deletion)
+    adapter.verify_bootstrap_empty()
+    approve(plan, approved_hash)
+    if file_hash(plan["saved_plan"]) != plan["saved_plan_sha256"]:
+        raise Refused("Saved cleanup plan changed during verification")
+    try:
+        runner(
+            [
+                "terraform",
+                f"-chdir={plan['terraform_directory']}",
+                "apply",
+                "-input=false",
+                plan["saved_plan"],
+            ],
+            capture=False,
+        )
+    except Exception as apply_error:
+        try:
+            adapter.restore_database_protection_if_present()
+        except Exception as protection_error:
+            raise Refused(
+                "Bootstrap cleanup failed and database deletion protection could not be restored; preserve the journal and reconcile immediately"
+            ) from protection_error
+        raise apply_error
+    if "aws_db_instance.main" in plan["deletions"]:
+        adapter.wait_bootstrap_final_snapshot()
+    from .inventory import InventoryCollector
+
+    inventory = InventoryCollector(
+        plan["config"],
+        adapter.clients,
+        bootstrap_cleanup=True,
+        bootstrap_final_required="aws_db_instance.main" in plan["deletions"],
+    ).collect()
+    if not inventory["inventory_complete"] or not inventory["runtime_gone"]:
+        try:
+            adapter.restore_database_protection_if_present()
+        except Exception as protection_error:
+            raise Refused(
+                "Bootstrap cleanup inventory is incomplete and RDS deletion protection could not be restored"
+            ) from protection_error
+        raise Refused(
+            "Bootstrap cleanup plan applied but provider inventory still finds runtime resources"
+        )
+    return {
+        "operation": "bootstrap-cleanup-receipt",
+        "config": plan["config"],
+        "created_at": now().isoformat(),
+        "plan_hash": digest(plan),
+        "executed": True,
+        "remaining_resources": inventory["runtime_remaining"],
+        "management_resources_remain": inventory.get("management_remaining", []),
+        "retained_data": True,
+    }
 
 
 def restore_prepare(receipt, adapter):

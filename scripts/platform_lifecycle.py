@@ -13,10 +13,12 @@ from lifecycle.core import (
     Refused,
     backup_execute,
     backup_plan,
+    bootstrap_cleanup_execute,
     command,
     digest,
     execute_expiry,
     now,
+    prepare_bootstrap_cleanup,
     prepare_expiry,
     prepare_shutdown,
     restore_prepare,
@@ -66,6 +68,8 @@ def main():
             "verify-receipt",
             "plan-shutdown",
             "shutdown",
+            "plan-bootstrap-cleanup",
+            "bootstrap-cleanup",
             "restore",
             "deploy",
             "promote",
@@ -98,7 +102,14 @@ def main():
             raise Refused(
                 "Use approved lifecycle runbooks. Deployment, promotion, and foundation purge are not enabled."
             )
-        if args.operation in ["backup", "shutdown", "expiry", "admit", "release"]:
+        if args.operation in [
+            "backup",
+            "shutdown",
+            "bootstrap-cleanup",
+            "expiry",
+            "admit",
+            "release",
+        ]:
             if not (args.execute and args.plan and args.approved_plan_hash and args.output):
                 raise Refused("Mutation requires --execute --plan --approved-plan-hash --output")
             plan = load(args.plan)
@@ -109,6 +120,7 @@ def main():
             expected_operation = {
                 "backup": "backup",
                 "shutdown": "shutdown",
+                "bootstrap-cleanup": "bootstrap-cleanup",
                 "expiry": "expiry",
                 "admit": "admission",
                 "release": "release",
@@ -156,6 +168,10 @@ def main():
                     )
                 elif args.operation == "backup":
                     result = backup_execute(plan, args.approved_plan_hash, aws)
+                elif args.operation == "bootstrap-cleanup":
+                    result = bootstrap_cleanup_execute(
+                        plan, args.approved_plan_hash, aws, runner=guarded_runner
+                    )
                 else:
                     result = shutdown_execute(
                         plan, args.approved_plan_hash, aws, runner=guarded_runner
@@ -227,6 +243,17 @@ def main():
                 aws.verify_receipt(load(args.receipt))
                 result = prepare_shutdown(
                     config, args.receipt, args.runtime_dir, args.var_file, args.saved_plan
+                )
+            elif args.operation == "plan-bootstrap-cleanup":
+                if (
+                    config is None
+                    or not args.runtime_dir
+                    or not args.var_file
+                    or not args.saved_plan
+                ):
+                    raise Refused("config/runtime-dir/var-file/saved-plan required")
+                result = prepare_bootstrap_cleanup(
+                    config, args.runtime_dir, args.var_file, args.saved_plan
                 )
             elif args.operation in ["restore", "verify-receipt"]:
                 if not args.receipt:

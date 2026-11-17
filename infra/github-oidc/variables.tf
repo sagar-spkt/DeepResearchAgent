@@ -13,3 +13,12 @@ variable "region" {
   default = "us-east-1"
 }
 
+variable "staging_rds_master_secret_arn" {
+  type        = string
+  description = "Exact Secrets Manager ARN for the staging RDS managed master password, read by the one-time GitHub deployment bootstrap job."
+  validation {
+    condition     = can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:rds!db-[A-Za-z0-9-]+$", var.staging_rds_master_secret_arn))
+    error_message = "Use the exact RDS-managed staging master secret ARN in the configured account and Region."
+  }
+}
+

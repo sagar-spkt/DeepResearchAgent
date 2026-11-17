@@ -89,7 +89,8 @@ class AWSAdapter:
             or key.get("KeyManager") != "CUSTOMER"
             or key.get("KeyUsage") != "ENCRYPT_DECRYPT"
             or key.get("KeySpec") != "SYMMETRIC_DEFAULT"
-            or key.get("Description") != f"Encryption key for deepresearch-{self.config['environment']} expiry alert topic"
+            or key.get("Description")
+            != f"Encryption key for deepresearch-{self.config['environment']} expiry alert topic"
             or rotation.get("KeyRotationEnabled") is not True
             or key_tags.get("Project") != "deepresearch"
             or key_tags.get("Environment") != self.config["environment"]
@@ -441,6 +442,175 @@ class AWSAdapter:
             DBInstanceIdentifier=self.config["database_identifier"],
             WaiterConfig={"Delay": 15, "MaxAttempts": 40},
         )
+
+    def disable_database_protection_if_present(self, expected_to_delete=False):
+        self.require_lease()
+        try:
+            instances = self.clients["rds"].describe_db_instances(
+                DBInstanceIdentifier=self.config["database_identifier"]
+            )["DBInstances"]
+        except self.clients["rds"].exceptions.DBInstanceNotFoundFault:
+            return False
+        if len(instances) != 1:
+            raise Refused("Bootstrap database lookup was ambiguous")
+        instance = instances[0]
+        tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=instance["DBInstanceArn"]
+            )["TagList"]
+        }
+        if (
+            instance.get("DBInstanceIdentifier") != self.config["database_identifier"]
+            or tags.get("Project") != "deepresearch"
+            or tags.get("Environment") != self.config["environment"]
+            or tags.get("Session") != self.config["session_id"]
+        ):
+            raise Refused("Refusing to change protection on an unbound database")
+        if not expected_to_delete:
+            raise Refused("A session database exists outside the approved bootstrap destroy plan")
+        if instance.get("DeletionProtection"):
+            self.disable_database_protection()
+        return True
+
+    def restore_database_protection_if_present(self):
+        self.require_lease()
+        try:
+            instances = self.clients["rds"].describe_db_instances(
+                DBInstanceIdentifier=self.config["database_identifier"]
+            )["DBInstances"]
+        except self.clients["rds"].exceptions.DBInstanceNotFoundFault:
+            return
+        if len(instances) != 1:
+            raise Refused("Bootstrap database lookup was ambiguous while restoring protection")
+        instance = instances[0]
+        tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=instance["DBInstanceArn"]
+            )["TagList"]
+        }
+        if (
+            instance.get("DBInstanceIdentifier") != self.config["database_identifier"]
+            or tags.get("Project") != "deepresearch"
+            or tags.get("Environment") != self.config["environment"]
+            or tags.get("Session") != self.config["session_id"]
+            or instance.get("DBInstanceStatus") != "available"
+        ):
+            raise Refused("Could not safely restore deletion protection to the session database")
+        if not instance.get("DeletionProtection"):
+            self.clients["rds"].modify_db_instance(
+                DBInstanceIdentifier=self.config["database_identifier"],
+                DeletionProtection=True,
+                ApplyImmediately=True,
+            )
+            self.clients["rds"].get_waiter("db_instance_available").wait(
+                DBInstanceIdentifier=self.config["database_identifier"],
+                WaiterConfig={"Delay": 15, "MaxAttempts": 40},
+            )
+
+    def wait_bootstrap_final_snapshot(self):
+        self.require_lease()
+        identifier = f"{self.config['database_identifier']}-{self.config['session_id']}-final"
+        self.clients["rds"].get_waiter("db_snapshot_available").wait(
+            DBSnapshotIdentifier=identifier,
+            WaiterConfig={"Delay": 15, "MaxAttempts": 80},
+        )
+        snapshot = self.clients["rds"].describe_db_snapshots(DBSnapshotIdentifier=identifier)[
+            "DBSnapshots"
+        ]
+        if (
+            len(snapshot) != 1
+            or snapshot[0].get("Status") != "available"
+            or snapshot[0].get("Encrypted") is not True
+            or snapshot[0].get("DBSnapshotArn")
+            != f"arn:aws:rds:{self.config['region']}:{self.config['account_id']}:snapshot:{identifier}"
+        ):
+            raise Refused("Bootstrap final snapshot is missing, unencrypted, or out of scope")
+
+    def verify_bootstrap_empty(self):
+        """Allow first-provision cleanup only before application installation."""
+        self.require_lease()
+        self.identity()
+        self.verify_retained()
+        try:
+            cluster = self.clients["eks"].describe_cluster(name=self.config["cluster_name"])[
+                "cluster"
+            ]
+        except self.clients["eks"].exceptions.ResourceNotFoundException:
+            cluster = None
+        if cluster is not None:
+            if (
+                cluster.get("status") not in {"ACTIVE", "FAILED"}
+                or cluster.get("arn") != self.context
+                or any(
+                    cluster.get("tags", {}).get(k) != v
+                    for k, v in {
+                        "Project": "deepresearch",
+                        "Environment": self.config["environment"],
+                        "Session": self.config["session_id"],
+                    }.items()
+                )
+            ):
+                raise Refused("Partial EKS cluster is not terminal or does not match session")
+            if cluster.get("status") == "ACTIVE":
+                self.runner(
+                    [
+                        "aws",
+                        "eks",
+                        "update-kubeconfig",
+                        "--region",
+                        self.config["region"],
+                        "--name",
+                        self.config["cluster_name"],
+                        "--alias",
+                        self.context,
+                        "--role-arn",
+                        f"arn:aws:iam::{self.config['account_id']}:role/{self.config['cluster_name']}-cluster-admin",
+                    ]
+                )
+                result = self.runner(
+                    [
+                        "kubectl",
+                        "--context",
+                        self.context,
+                        "get",
+                        "namespace",
+                        "research",
+                        "-o",
+                        "json",
+                        "--ignore-not-found=true",
+                    ]
+                )
+                if result.strip():
+                    namespace = json.loads(result)
+                    if namespace.get("metadata", {}).get("name") != "research":
+                        raise Refused("Could not verify bootstrap namespace state")
+                    raise Refused(
+                        "Research namespace exists; bootstrap cleanup requires app installation never started"
+                    )
+        try:
+            result = self.clients["rds"].describe_db_instances(
+                DBInstanceIdentifier=self.config["database_identifier"]
+            )["DBInstances"][0]
+        except self.clients["rds"].exceptions.DBInstanceNotFoundFault:
+            result = None
+        if result is not None:
+            tags = {
+                item["Key"]: item["Value"]
+                for item in self.clients["rds"].list_tags_for_resource(
+                    ResourceName=result["DBInstanceArn"]
+                )["TagList"]
+            }
+            if (
+                result.get("DBInstanceStatus") != "available"
+                or result.get("DBInstanceIdentifier") != self.config["database_identifier"]
+                or tags.get("Project") != "deepresearch"
+                or tags.get("Environment") != self.config["environment"]
+                or tags.get("Session") != self.config["session_id"]
+            ):
+                raise Refused("Database is not available or does not match bootstrap session")
+        return {"cluster_present": cluster is not None, "database_present": result is not None}
 
     def remaining_inventory(self):
         from .inventory import InventoryCollector

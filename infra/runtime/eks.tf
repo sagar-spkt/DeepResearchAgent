@@ -90,6 +90,24 @@ resource "aws_eks_access_policy_association" "administrator" {
 
 }
 
+resource "aws_eks_access_entry" "github_actions" {
+  count         = var.environment == "staging" ? 1 : 0
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = "arn:aws:iam::${var.account_id}:role/deepresearch-staging-github-oidc"
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "github_actions" {
+  count         = var.environment == "staging" ? 1 : 0
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_eks_access_entry.github_actions[count.index].principal_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+  access_scope {
+    type       = "namespace"
+    namespaces = ["research"]
+  }
+}
+
 data "aws_iam_policy_document" "node_trust" {
 
   statement {
@@ -143,9 +161,9 @@ resource "aws_eks_node_group" "cpu" {
 resource "aws_eks_node_group" "gpu" {
 
   cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "gpu"
+  node_group_name = "gpu-flex"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = aws_subnet.public[*].id
+  subnet_ids      = concat(aws_subnet.public[*].id, [aws_subnet.gpu.id, aws_subnet.gpu_fallback.id])
   instance_types  = ["g6e.xlarge"]
   capacity_type   = "ON_DEMAND"
   ami_type        = "AL2023_x86_64_NVIDIA"
@@ -172,6 +190,8 @@ resource "aws_eks_node_group" "gpu" {
     aws_eks_addon.kube_proxy,
     aws_eks_addon.coredns,
     aws_eks_addon.pod_identity,
+    aws_route_table_association.gpu,
+    aws_route_table_association.gpu_fallback,
   ]
 
 }
@@ -232,6 +252,48 @@ resource "aws_iam_role" "application" {
   assume_role_policy = data.aws_iam_policy_document.pod_trust.json
 }
 
+data "aws_iam_policy_document" "load_balancer_controller_trust" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/eks-cluster-name"
+      values   = [local.name]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes-namespace"
+      values   = ["kube-system"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes-service-account"
+      values   = ["aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "aws_iam_role" "load_balancer_controller" {
+  name               = "${local.name}-load-balancer-controller"
+  assume_role_policy = data.aws_iam_policy_document.load_balancer_controller_trust.json
+  description        = "Pod Identity role for the staging AWS Load Balancer Controller."
+}
+
+resource "aws_iam_policy" "load_balancer_controller" {
+  name        = "${local.name}-load-balancer-controller"
+  description = "AWS Load Balancer Controller v2.14.1 policy for the staging cluster."
+  policy      = jsonencode(jsondecode(file("${path.module}/aws-load-balancer-controller-policy.json")))
+}
+
+resource "aws_iam_role_policy_attachment" "load_balancer_controller" {
+  role       = aws_iam_role.load_balancer_controller.name
+  policy_arn = aws_iam_policy.load_balancer_controller.arn
+}
+
 resource "aws_iam_role_policy" "application" {
 
   role = aws_iam_role.application.id
@@ -258,5 +320,14 @@ resource "aws_eks_pod_identity_association" "application" {
   service_account = "research-application"
   role_arn        = aws_iam_role.application.arn
 
+}
+
+resource "aws_eks_pod_identity_association" "load_balancer_controller" {
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = "kube-system"
+  service_account = "aws-load-balancer-controller"
+  role_arn        = aws_iam_role.load_balancer_controller.arn
+
+  depends_on = [aws_eks_addon.pod_identity, aws_iam_role_policy_attachment.load_balancer_controller]
 }
 

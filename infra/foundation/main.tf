@@ -6,6 +6,15 @@ variable "callback_urls" {
   type = list(string)
 }
 
+variable "route53_zone_id" {
+  type        = string
+  description = "Public Route 53 zone ID that owns the staging hostname."
+  validation {
+    condition     = can(regex("^Z[A-Z0-9]+$", var.route53_zone_id))
+    error_message = "Specify a public Route 53 hosted-zone ID."
+  }
+}
+
 resource "aws_s3_bucket" "data" {
 
   for_each      = toset(["documents", "backups", "traces"])
@@ -92,7 +101,7 @@ resource "aws_ecr_repository" "images" {
 
 resource "aws_secretsmanager_secret" "application" {
 
-  for_each                = toset(["application", "vllm", "langfuse"])
+  for_each                = toset(["application", "vllm", "langfuse", "web"])
   name                    = "${local.name}/${each.key}"
   recovery_window_in_days = 30
   lifecycle {
@@ -203,13 +212,6 @@ resource "aws_sns_topic_policy" "alerts" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowAccountOwnerManagement"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action    = "sns:*"
-        Resource  = aws_sns_topic.alerts.arn
-      },
-      {
         Sid       = "AllowEnvironmentExpiryAlarmsToPublish"
         Effect    = "Allow"
         Principal = { Service = "cloudwatch.amazonaws.com" }
@@ -283,6 +285,29 @@ resource "aws_cognito_user_pool_domain" "users" {
 
 }
 
+resource "aws_acm_certificate" "staging" {
+  domain_name       = var.domain
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+    prevent_destroy       = true
+  }
+}
+
+resource "aws_route53_record" "staging_certificate_validation" {
+  zone_id = var.route53_zone_id
+  name    = one(aws_acm_certificate.staging.domain_validation_options).resource_record_name
+  type    = one(aws_acm_certificate.staging.domain_validation_options).resource_record_type
+  ttl     = 60
+  records = [one(aws_acm_certificate.staging.domain_validation_options).resource_record_value]
+}
+
+resource "aws_acm_certificate_validation" "staging" {
+  certificate_arn         = aws_acm_certificate.staging.arn
+  validation_record_fqdns = [aws_route53_record.staging_certificate_validation.fqdn]
+}
+
 output "foundation" {
 
   value = {
@@ -299,8 +324,9 @@ output "foundation" {
       for k, v in aws_secretsmanager_secret.application : k => v.arn
     }
 
-    user_pool_id = aws_cognito_user_pool.users.id
-    client_id    = aws_cognito_user_pool_client.web.id
+    user_pool_id    = aws_cognito_user_pool.users.id
+    client_id       = aws_cognito_user_pool_client.web.id
+    certificate_arn = aws_acm_certificate_validation.staging.certificate_arn
     repositories = {
       for k, v in aws_ecr_repository.images : k => v.repository_url
     }

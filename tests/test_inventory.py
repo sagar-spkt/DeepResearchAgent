@@ -40,6 +40,7 @@ KEYS = {
     "describe_db_snapshots": "DBSnapshots",
     "describe_load_balancers": "LoadBalancers",
     "describe_log_groups": "logGroups",
+    "list_policies": "Policies",
 }
 
 
@@ -314,8 +315,13 @@ class InventoryTests(unittest.TestCase):
                 def role(kwargs):
                     if kwargs["RoleName"] != name:
                         raise ProviderError("NoSuchEntity")
-                    return {"Role": {"RoleName": name, "Arn": arn("iam", "role/" + name),
-                                     "Tags": [{"Key": k, "Value": v} for k, v in TAGS.items()]}}
+                    return {
+                        "Role": {
+                            "RoleName": name,
+                            "Arn": arn("iam", "role/" + name),
+                            "Tags": [{"Key": k, "Value": v} for k, v in TAGS.items()],
+                        }
+                    }
 
                 self.fixtures["direct"][("iam", "get_role")] = role
                 result = self.collect()
@@ -445,7 +451,9 @@ class InventoryTests(unittest.TestCase):
 
         self.assertTrue(result["inventory_complete"], result["errors"])
         self.assertEqual([expected_names], requested_names)
-        retained = {row["id"] for row in result["retained_resources"] if row["kind"] == "expiry-alarm"}
+        retained = {
+            row["id"] for row in result["retained_resources"] if row["kind"] == "expiry-alarm"
+        }
         self.assertEqual(
             {arn("cloudwatch", "alarm:" + alarm_name) for alarm_name in expected_names}, retained
         )

@@ -1,0 +1,200 @@
+"""Manage the staging GitHub workflow's lease in the shared lifecycle table."""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from uuid import uuid4
+
+TABLE = "deepresearch-control"
+REGION = "us-east-1"
+SESSION_ID = "stg-20261116"
+ENVIRONMENT = "staging"
+ACCOUNT_ID = "088759500358"
+LEASE_SECONDS = 120
+
+
+class LeaseError(RuntimeError):
+    pass
+
+
+def request(args, runner=subprocess.run):
+    result = runner(
+        ["aws", "dynamodb", *args, "--region", REGION, "--output", "json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise LeaseError("DynamoDB lifecycle lease operation failed")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LeaseError("DynamoDB returned an invalid lifecycle response") from exc
+
+
+def item(key, runner=subprocess.run):
+    result = request(
+        [
+            "get-item",
+            "--table-name",
+            TABLE,
+            "--consistent-read",
+            "--key",
+            json.dumps({"key": {"S": key}}),
+        ],
+        runner,
+    )
+    return result.get("Item", {})
+
+
+def assert_admission(runner=subprocess.run):
+    current = item("active-session", runner)
+    expected = {
+        "session_id": SESSION_ID,
+        "environment": ENVIRONMENT,
+        "account_id": ACCOUNT_ID,
+    }
+    if any(current.get(key, {}).get("S") != value for key, value in expected.items()):
+        raise LeaseError("The expected staging session is not the active admission")
+    try:
+        return int(current["started_at"]["N"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LeaseError("The staging admission start time is invalid") from exc
+
+
+def acquire(owner, now=None, runner=subprocess.run):
+    start = assert_admission(runner)
+    instant = int(time.time() if now is None else now)
+    deadline = start + 4 * 60 * 60
+    if instant >= deadline:
+        raise LeaseError("The staging runtime deadline has passed")
+    request(
+        [
+            "update-item",
+            "--table-name",
+            TABLE,
+            "--key",
+            json.dumps({"key": {"S": "lifecycle-lock"}}),
+            "--update-expression",
+            "SET owner_id = :owner, expires_at = :expires, session_id = :session",
+            "--condition-expression",
+            "attribute_not_exists(owner_id) OR expires_at < :now",
+            "--expression-attribute-values",
+            json.dumps(
+                {
+                    ":owner": {"S": owner},
+                    ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
+                    ":session": {"S": SESSION_ID},
+                    ":now": {"N": str(instant)},
+                }
+            ),
+        ],
+        runner,
+    )
+
+
+def assert_owner(owner, now=None, runner=subprocess.run):
+    start = assert_admission(runner)
+    current = item("lifecycle-lock", runner)
+    instant = int(time.time() if now is None else now)
+    deadline = start + 4 * 60 * 60
+    expires = int(current.get("expires_at", {}).get("N", "0"))
+    if (
+        instant >= deadline
+        or expires > deadline
+        or current.get("owner_id", {}).get("S") != owner
+        or current.get("session_id", {}).get("S") != SESSION_ID
+        or expires <= instant
+    ):
+        raise LeaseError("The staging lifecycle lease expired or changed owner")
+
+
+def renew(owner, now=None, runner=subprocess.run):
+    start = assert_admission(runner)
+    instant = int(time.time() if now is None else now)
+    deadline = start + 4 * 60 * 60
+    if instant >= deadline:
+        raise LeaseError("The staging runtime deadline has passed")
+    request(
+        [
+            "update-item",
+            "--table-name",
+            TABLE,
+            "--key",
+            json.dumps({"key": {"S": "lifecycle-lock"}}),
+            "--update-expression",
+            "SET expires_at = :expires",
+            "--condition-expression",
+            "owner_id = :owner AND session_id = :session AND expires_at > :now AND expires_at <= :deadline",
+            "--expression-attribute-values",
+            json.dumps(
+                {
+                    ":owner": {"S": owner},
+                    ":session": {"S": SESSION_ID},
+                    ":expires": {"N": str(min(instant + LEASE_SECONDS, deadline))},
+                    ":now": {"N": str(instant)},
+                    ":deadline": {"N": str(deadline)},
+                }
+            ),
+        ],
+        runner,
+    )
+
+
+def read_owner(path):
+    try:
+        value = Path(path).read_text().strip()
+    except OSError as exc:
+        raise LeaseError("The staging lifecycle owner file is unavailable") from exc
+    if not value or len(value) > 64:
+        raise LeaseError("The staging lifecycle owner file is invalid")
+    return value
+
+
+def write_heartbeat_status(owner_file, lost=False):
+    status = owner_file.with_name(owner_file.name + (".lost" if lost else ".heartbeat"))
+    descriptor = os.open(status, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as target:
+        target.write(str(int(time.time())) + "\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=["acquire", "assert", "heartbeat"])
+    parser.add_argument("--owner-file", type=Path, required=True)
+    parser.add_argument("--interval", type=int, default=30)
+    args = parser.parse_args()
+    try:
+        if args.operation == "acquire":
+            owner = str(uuid4())
+            acquire(owner)
+            descriptor = os.open(args.owner_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as target:
+                target.write(owner + "\n")
+        else:
+            owner = read_owner(args.owner_file)
+            if args.operation == "assert":
+                assert_owner(owner)
+            else:
+                if not 10 <= args.interval <= 60:
+                    raise LeaseError("Heartbeat interval must be 10–60 seconds")
+                while True:
+                    try:
+                        renew(owner)
+                        write_heartbeat_status(args.owner_file)
+                    except LeaseError:
+                        write_heartbeat_status(args.owner_file, lost=True)
+                        raise
+                    time.sleep(args.interval)
+        return 0
+    except (LeaseError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

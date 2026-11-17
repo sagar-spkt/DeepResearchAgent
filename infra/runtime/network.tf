@@ -24,6 +24,36 @@ resource "aws_subnet" "public" {
 
 }
 
+resource "aws_subnet" "gpu" {
+  vpc_id                  = aws_vpc.main.id
+  availability_zone       = var.gpu_availability_zone
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, 2)
+  map_public_ip_on_launch = true
+  tags = {
+    "kubernetes.io/role/elb" = "1"
+  }
+}
+
+resource "aws_route_table_association" "gpu" {
+  subnet_id      = aws_subnet.gpu.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_subnet" "gpu_fallback" {
+  vpc_id                  = aws_vpc.main.id
+  availability_zone       = var.gpu_fallback_availability_zone
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, 3)
+  map_public_ip_on_launch = true
+  tags = {
+    "kubernetes.io/role/elb" = "1"
+  }
+}
+
+resource "aws_route_table_association" "gpu_fallback" {
+  subnet_id      = aws_subnet.gpu_fallback.id
+  route_table_id = aws_route_table.public.id
+}
+
 resource "aws_subnet" "private" {
 
   count                   = 2

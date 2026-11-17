@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -65,8 +66,12 @@ class PlatformToolsTest(unittest.TestCase):
         spec.loader.exec_module(lifecycle)
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", ["platform_lifecycle.py", "promote", "--environment", "production"]),
-            patch.object(lifecycle, "adapter", side_effect=AssertionError("AWS adapter was constructed")),
+            patch.object(
+                sys, "argv", ["platform_lifecycle.py", "promote", "--environment", "production"]
+            ),
+            patch.object(
+                lifecycle, "adapter", side_effect=AssertionError("AWS adapter was constructed")
+            ),
             redirect_stdout(output),
         ):
             self.assertEqual(2, lifecycle.main())
@@ -156,21 +161,21 @@ class PlatformToolsTest(unittest.TestCase):
         workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
         step = next(
             step
-            for step in workflow["jobs"]["preflight"]["steps"]
-            if step.get("name") == "Require deliberate staging authorization"
+            for step in workflow["jobs"]["required-checks"]["steps"]
+            if step.get("name") == "Require manual authorization when dispatched"
         )
-        for environment, confirmation, expected in [
-            ("staging", "", 1),
-            ("staging", "launch", 1),
-            ("staging", "I AUTHORIZE STAGING DEPLOYMENT", 0),
-            ("production", "I AUTHORIZE STAGING DEPLOYMENT", 1),
+        for event, confirmation, expected in [
+            ("workflow_dispatch", "", 1),
+            ("workflow_dispatch", "launch", 1),
+            ("workflow_dispatch", "I AUTHORIZE STAGING DEPLOYMENT", 0),
+            ("push", "", 0),
         ]:
-            with self.subTest(environment=environment, confirmation=confirmation):
+            with self.subTest(event=event, confirmation=confirmation):
                 result = subprocess.run(
                     ["bash", "-c", step["run"]],
                     env={
                         **os.environ,
-                        "TARGET_ENVIRONMENT": environment,
+                        "EVENT_NAME": event,
                         "STAGING_CONFIRMATION": confirmation,
                         "GITHUB_ACTOR": "test-operator",
                         "GITHUB_SHA": "a" * 40,
@@ -181,9 +186,77 @@ class PlatformToolsTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, result.returncode)
 
+    def test_staging_deploy_requires_recovery_and_network_gates(self):
+        workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
+        job = workflow["jobs"]["recovery-gate"]
+        step = next(step for step in job["steps"] if step.get("id") == "gate")
+        cases = [
+            ("", "", "false", "backup/restore rehearsal"),
+            ("false", "true", "false", "backup/restore rehearsal"),
+            ("true", "", "false", "in-VPC EKS deployment runner"),
+            ("true", "true", "true", "runner gates are accepted"),
+        ]
+        for recovery, network, expected, message in cases:
+            with self.subTest(recovery=recovery, network=network):
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "output"
+                    summary = Path(directory) / "summary"
+                    result = subprocess.run(
+                        ["bash", "-c", step["run"]],
+                        env={
+                            **os.environ,
+                            "RECOVERY_ACCEPTED": recovery,
+                            "NETWORK_READY": network,
+                            "GITHUB_OUTPUT": str(output),
+                            "GITHUB_STEP_SUMMARY": str(summary),
+                        },
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(0, result.returncode)
+                    self.assertEqual(f"accepted={expected}\n", output.read_text())
+                    self.assertIn(message, summary.read_text())
+        self.assertEqual(
+            "github.ref == 'refs/heads/main' && needs.recovery-gate.outputs.accepted == 'true'",
+            workflow["jobs"]["deploy"]["if"],
+        )
+        self.assertEqual(
+            ["self-hosted", "linux", "staging-vpc"],
+            workflow["jobs"]["deploy"]["runs-on"],
+        )
+
+    def test_deploy_installs_bootstrap_secret_cleanup_before_kubernetes_secrets(self):
+        workflow = json.loads((ROOT / ".github/workflows/deploy.yml").read_text())
+        step = next(
+            step
+            for step in workflow["jobs"]["deploy"]["steps"]
+            if step.get("name") == "Bootstrap the database and deploy the reviewed staging chart"
+        )
+        self.assertLess(
+            step["run"].index("trap cleanup_bootstrap EXIT"),
+            step["run"].index("apply_secret application"),
+        )
+        self.assertLess(
+            step["run"].index("trap cleanup_bootstrap EXIT"),
+            step["run"].index('kubectl -n research create secret generic "$BOOTSTRAP_SECRET_NAME"'),
+        )
+        cleanup = step["run"].split("cleanup_bootstrap() {", 1)[1].split("}\ntrap", 1)[0]
+        self.assertIn('delete secret "$BOOTSTRAP_SECRET_NAME"', cleanup)
+        self.assertIn("even if lease renewal failed", cleanup)
+        self.assertIn("github.run_id", step["env"]["BOOTSTRAP_SECRET_NAME"])
+        self.assertIn("github.run_attempt", step["env"]["BOOTSTRAP_JOB_NAME"])
+        temp_cleanup = next(
+            item
+            for item in workflow["jobs"]["deploy"]["steps"]
+            if item.get("name") == "Remove temporary staging credentials from the runner"
+        )
+        self.assertEqual("always()", temp_cleanup["if"])
+        self.assertIn("research-application.yaml", temp_cleanup["run"])
+        self.assertIn("staging-secrets", temp_cleanup["run"])
+
     def test_aws_lifecycle_workflows_remain_read_only_and_fail_closed(self):
         expected_operations = {
-            "deploy.yml": "deploy",
             "promote.yml": "promote",
             "restore.yml": "restore",
             "purge.yml": "purge",
@@ -191,9 +264,7 @@ class PlatformToolsTest(unittest.TestCase):
         }
         for filename, operation in expected_operations.items():
             with self.subTest(workflow=filename):
-                workflow = json.loads(
-                    (ROOT / ".github/workflows" / filename).read_text()
-                )
+                workflow = json.loads((ROOT / ".github/workflows" / filename).read_text())
                 self.assertEqual(
                     {"name", "on", "permissions", "concurrency", "jobs"},
                     set(workflow),
@@ -246,9 +317,7 @@ class PlatformToolsTest(unittest.TestCase):
                         "type": "string",
                         "required": False,
                     }
-                self.assertEqual(
-                    {"workflow_dispatch": {"inputs": expected_inputs}}, workflow["on"]
-                )
+                self.assertEqual({"workflow_dispatch": {"inputs": expected_inputs}}, workflow["on"])
                 self.assertEqual(
                     {
                         "group": "deepresearch-aws-lifecycle",
@@ -278,7 +347,7 @@ class PlatformToolsTest(unittest.TestCase):
                                 "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
                                 "PRODUCTION_CONFIRMATION": "${{ inputs.production_confirmation }}",
                             },
-                            "run": "if [[ \"$TARGET_ENVIRONMENT\" != \"production\" || \"$PRODUCTION_CONFIRMATION\" != \"I AUTHORIZE PRODUCTION PROMOTION\" ]]; then echo 'Production promotion requires the exact confirmation phrase.' >&2; exit 1; fi; echo \"Production self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\"",
+                            "run": 'if [[ "$TARGET_ENVIRONMENT" != "production" || "$PRODUCTION_CONFIRMATION" != "I AUTHORIZE PRODUCTION PROMOTION" ]]; then echo \'Production promotion requires the exact confirmation phrase.\' >&2; exit 1; fi; echo "Production self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA"',
                         }
                     )
                 if filename == "deploy.yml":
@@ -289,7 +358,7 @@ class PlatformToolsTest(unittest.TestCase):
                                 "TARGET_ENVIRONMENT": "${{ inputs.environment }}",
                                 "STAGING_CONFIRMATION": "${{ inputs.staging_confirmation }}",
                             },
-                            "run": "if [[ \"$TARGET_ENVIRONMENT\" != \"staging\" || \"$STAGING_CONFIRMATION\" != \"I AUTHORIZE STAGING DEPLOYMENT\" ]]; then echo 'Staging deployment requires the exact confirmation phrase.' >&2; exit 1; fi; echo \"Staging self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA\"",
+                            "run": 'if [[ "$TARGET_ENVIRONMENT" != "staging" || "$STAGING_CONFIRMATION" != "I AUTHORIZE STAGING DEPLOYMENT" ]]; then echo \'Staging deployment requires the exact confirmation phrase.\' >&2; exit 1; fi; echo "Staging self-authorization confirmed by $GITHUB_ACTOR for $GITHUB_SHA"',
                         }
                     )
                 other_operation_gates = {
@@ -323,7 +392,7 @@ class PlatformToolsTest(unittest.TestCase):
                         "name": "Inspect lifecycle readiness (fails closed until implementation completes)",
                         "env": {"TARGET_ENVIRONMENT": "${{ inputs.environment }}"},
                         "run": (
-                            f'python3 scripts/platform_lifecycle.py {operation} '
+                            f"python3 scripts/platform_lifecycle.py {operation} "
                             '--environment "$TARGET_ENVIRONMENT"'
                         ),
                     }

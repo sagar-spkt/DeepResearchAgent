@@ -22,6 +22,8 @@ spec:
             - {{ .Values.vllm.model | quote }}
             - --revision
             - {{ required "vllm.revision must pin model weights" .Values.vllm.revision | quote }}
+            - --api-key
+            - "$(VLLM_API_KEY)"
             - --max-model-len
             - {{ .Values.vllm.maxModelLen | quote }}
             - --enable-prefix-caching

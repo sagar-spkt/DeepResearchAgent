@@ -9,6 +9,18 @@ variable "availability_zones" {
 
 }
 
+variable "gpu_availability_zone" {
+  type        = string
+  default     = "us-east-1c"
+  description = "Availability Zone for the one-session GPU node group. Select a zone with confirmed g6e.xlarge capacity."
+}
+
+variable "gpu_fallback_availability_zone" {
+  type        = string
+  default     = "us-east-1d"
+  description = "Second Availability Zone for GPU capacity selection when the primary zone has no On-Demand capacity."
+}
+
 variable "administrator_cidrs" {
   type        = list(string)
   nullable    = false

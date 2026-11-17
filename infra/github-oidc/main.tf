@@ -23,6 +23,11 @@ locals {
   # Keep the OIDC identity pinned to this repository; changing it requires a reviewed source change.
   repository_subject = "repo:sagar-spkt@22609549/DeepResearchAgent@1457879530"
   environments       = toset(["staging", "production"])
+  staging_repository_arns = [
+    "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/deepresearch-staging/backend",
+    "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/deepresearch-staging/web",
+  ]
+  staging_control_table_arn = "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/deepresearch-control"
 }
 
 resource "aws_iam_role" "github_actions" {
@@ -70,7 +75,107 @@ resource "aws_iam_role_policies_exclusive" "github_actions" {
   for_each = local.environments
 
   role_name    = aws_iam_role.github_actions[each.key].name
-  policy_names = []
+  policy_names = each.key == "staging" ? [aws_iam_role_policy.staging_deploy.name] : []
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy" "staging_deploy" {
+  name = "deepresearch-staging-deploy"
+  role = aws_iam_role.github_actions["staging"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AuthenticateToECR"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "PublishOnlyStagingApplicationImages"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:CompleteLayerUpload",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+        ]
+        Resource = local.staging_repository_arns
+      },
+      {
+        Sid      = "DescribeOnlyStagingCluster"
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster"]
+        Resource = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/deepresearch-staging"
+      },
+      {
+        Sid    = "ReadOnlyStagingRuntimeSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/application-*",
+          "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/vllm-*",
+          "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/web-*",
+          var.staging_rds_master_secret_arn,
+        ]
+      },
+      {
+        Sid      = "VerifyStagingIngressLoadBalancer"
+        Effect   = "Allow"
+        Action   = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTags"]
+        Resource = "*"
+      },
+      {
+        Sid      = "ReadStagingDatabaseEndpoint"
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBInstances"]
+        Resource = "*"
+      },
+      {
+        Sid      = "UpdateOnlyTheStagingARecord"
+        Effect   = "Allow"
+        Action   = ["route53:ChangeResourceRecordSets"]
+        Resource = "arn:aws:route53:::hostedzone/Z07904421IUDAJDY0WXZ8"
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["staging.research.spktsagar.com"]
+            "route53:ChangeResourceRecordSetsRecordTypes"           = ["A"]
+            "route53:ChangeResourceRecordSetsActions"               = ["UPSERT"]
+          }
+        }
+      },
+      {
+        Sid      = "WaitForRoute53ChangeToPropagate"
+        Effect   = "Allow"
+        Action   = ["route53:GetChange"]
+        Resource = "arn:aws:route53:::change/*"
+      },
+      {
+        Sid      = "ReadActiveStagingAdmissionAndLease"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = local.staging_control_table_arn
+        Condition = {
+          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["active-session", "lifecycle-lock"] }
+          Null                        = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+      {
+        Sid      = "MaintainOnlyStagingLifecycleLease"
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = local.staging_control_table_arn
+        Condition = {
+          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["lifecycle-lock"] }
+          Null                        = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+    ]
+  })
 
   lifecycle {
     prevent_destroy = true
