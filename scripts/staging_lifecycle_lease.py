@@ -36,6 +36,8 @@ def request(args, runner=subprocess.run):
     )
     if result.returncode:
         raise LeaseError("DynamoDB lifecycle lease operation failed")
+    if not result.stdout.strip() and "update-item" in args:
+        return {}
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:

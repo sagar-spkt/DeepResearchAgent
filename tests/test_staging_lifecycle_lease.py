@@ -39,6 +39,33 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
         self.assertEqual("workflow-owner", values[":owner"]["S"])
         self.assertEqual("1120", values[":expires"]["N"])
 
+    def test_acquire_accepts_empty_success_response_from_dynamodb_update(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if "get-item" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    json.dumps(
+                        {
+                            "Item": {
+                                "session_id": {"S": "stg-20261116"},
+                                "environment": {"S": "staging"},
+                                "account_id": {"S": "088759500358"},
+                                "started_at": {"N": "1000"},
+                            }
+                        }
+                    ),
+                    "",
+                )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        acquire("workflow-owner", "stg-20261116", now=1000, runner=runner)
+        self.assertEqual(2, len(calls))
+        self.assertIn("update-item", calls[1])
+
     def test_wrong_admission_fails_before_lock_mutation(self):
         calls = []
 
