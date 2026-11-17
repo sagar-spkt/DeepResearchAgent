@@ -980,10 +980,23 @@ def release_plan(config, instant=None, bootstrap_cleanup_plan=None, cleanup_rece
 
 def _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt):
     """Bind bootstrap-only closeout to the exact reviewed first-provision cleanup."""
+    # Early bootstrap-cleanup artifacts predate the runner readiness field. They
+    # remain valid only while the current session explicitly has no runner.
+    legacy_config = dict(config)
+    runner_enabled = legacy_config.pop("github_runner_enabled", None)
+    cleanup_config = cleanup_plan.get("config") if isinstance(cleanup_plan, dict) else None
+    receipt_config = cleanup_receipt.get("config") if isinstance(cleanup_receipt, dict) else None
+    matching_config = cleanup_config == config and receipt_config == config
+    matching_legacy_config = (
+        runner_enabled is False
+        and isinstance(cleanup_config, dict)
+        and cleanup_config == legacy_config
+        and receipt_config == cleanup_config
+    )
     if (
         not isinstance(cleanup_plan, dict)
         or cleanup_plan.get("operation") != "bootstrap-cleanup"
-        or cleanup_plan.get("config") != config
+        or not (matching_config or matching_legacy_config)
     ):
         raise Refused("Not a matching first-provision bootstrap cleanup plan")
     required_preconditions = {
@@ -1005,7 +1018,10 @@ def _validate_bootstrap_cleanup_evidence(config, cleanup_plan, cleanup_receipt):
     if (
         not isinstance(cleanup_receipt, dict)
         or cleanup_receipt.get("operation") != "bootstrap-cleanup-receipt"
-        or cleanup_receipt.get("config") != config
+        or not (
+            cleanup_receipt.get("config") == config
+            or (matching_legacy_config and cleanup_receipt.get("config") == cleanup_config)
+        )
         or cleanup_receipt.get("plan_hash") != digest(cleanup_plan)
         or cleanup_receipt.get("executed") is not True
         or cleanup_receipt.get("retained_data") is not True

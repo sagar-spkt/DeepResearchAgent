@@ -762,15 +762,18 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual("21600", self.db.items["month#2026-11"]["reserved_seconds"]["N"])
         self.assertTrue(self.fixtures["calls"])
 
-    def bootstrap_evidence(self, directory):
+    def bootstrap_evidence(self, directory, *, legacy_config=False):
         import hashlib
         from pathlib import Path
 
         saved_plan = Path(directory) / "bootstrap.tfplan"
         saved_plan.write_bytes(b"reviewed bootstrap cleanup plan")
+        cleanup_config = {
+            key: value for key, value in CONFIG.items() if key != "github_runner_enabled"
+        } if legacy_config else CONFIG
         cleanup_plan = {
             "operation": "bootstrap-cleanup",
-            "config": CONFIG,
+            "config": cleanup_config,
             "saved_plan": str(saved_plan),
             "saved_plan_sha256": hashlib.sha256(saved_plan.read_bytes()).hexdigest(),
             "deletions": ["aws_eks_cluster.main", "aws_db_instance.main"],
@@ -782,7 +785,7 @@ class ReleaseTests(unittest.TestCase):
         }
         receipt = {
             "operation": "bootstrap-cleanup-receipt",
-            "config": CONFIG,
+            "config": cleanup_config,
             "plan_hash": digest(cleanup_plan),
             "executed": True,
             "remaining_resources": [],
@@ -830,6 +833,55 @@ class ReleaseTests(unittest.TestCase):
             [final_id],
             [item["id"].rsplit(":", 1)[-1] for item in result["inventory"]["retained_resources"] if item["kind"] == "rds-snapshot"],
         )
+
+    def test_bootstrap_release_accepts_legacy_receipt_only_when_runner_is_disabled(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory, legacy_config=True)
+            final_id = CONFIG["database_identifier"] + "-" + CONFIG["session_id"] + "-final"
+            self.fixtures["pages"][("rds", "describe_db_snapshots")] = [
+                {
+                    "DBSnapshotIdentifier": final_id,
+                    "DBInstanceIdentifier": CONFIG["database_identifier"],
+                    "DBSnapshotArn": arn("rds", "snapshot:" + final_id),
+                    "Status": "available",
+                    "Encrypted": True,
+                }
+            ]
+            plan = release_plan(
+                CONFIG,
+                datetime.fromtimestamp(self.clock[0], timezone.utc),
+                cleanup_plan,
+                receipt,
+            )
+            result = release_admission(
+                self.store,
+                CONFIG,
+                self.lease,
+                self.clients,
+                plan,
+                digest(plan),
+                cleanup_plan=cleanup_plan,
+                cleanup_receipt=receipt,
+            )
+
+        self.assertTrue(result["admission_released"])
+        self.assertEqual("first-provision-bootstrap-cleanup", result["closeout_mode"])
+
+    def test_bootstrap_release_rejects_legacy_receipt_when_runner_is_enabled(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            cleanup_plan, receipt = self.bootstrap_evidence(directory, legacy_config=True)
+            enabled_config = {**CONFIG, "github_runner_enabled": True}
+            with self.assertRaises(Refused):
+                release_plan(
+                    enabled_config,
+                    datetime.fromtimestamp(self.clock[0], timezone.utc),
+                    cleanup_plan,
+                    receipt,
+                )
 
     def test_bootstrap_release_still_requires_management_resources_gone(self):
         import tempfile
