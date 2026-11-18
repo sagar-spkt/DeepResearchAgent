@@ -1,9 +1,10 @@
 import json
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from scripts.materialize_staging_secrets import materialize
+from scripts.materialize_staging_secrets import LANGFUSE_KEYS, materialize
 
 
 class StagingSecretMaterializerTests(unittest.TestCase):
@@ -13,7 +14,10 @@ class StagingSecretMaterializerTests(unittest.TestCase):
             application = {
                 "DATABASE_URL": "postgresql+psycopg://research_app:secret@db:5432/research",
                 "APP_DB_PASSWORD": "app-secret",
-                "LANGFUSE_DB_PASSWORD": "trace-secret",
+                "LANGFUSE_DB_PASSWORD": "trace@%/&secret",
+                "LANGFUSE_PUBLIC_KEY": "pk-test",
+                "LANGFUSE_SECRET_KEY": "sk-test",
+                "LANGFUSE_BASE_URL": "http://langfuse:3000",
                 "VLLM_API_KEY": "model-secret",
                 "S3_BUCKET": "private-documents",
                 "SQS_QUEUE_URL": "https://sqs.example.test/queue",
@@ -43,7 +47,27 @@ class StagingSecretMaterializerTests(unittest.TestCase):
                 sources.append(path)
 
             output = root / "private-env"
-            materialize(*sources, "db.example.test", 5432, output)
+            langfuse = dict.fromkeys(LANGFUSE_KEYS, "sample")
+            langfuse.update(
+                CLICKHOUSE_PASSWORD="xml<&>",
+                LANGFUSE_INIT_PROJECT_PUBLIC_KEY="pk-test",
+                LANGFUSE_INIT_PROJECT_SECRET_KEY="sk-test",
+                LANGFUSE_S3_EVENT_UPLOAD_BUCKET="deepresearch-staging-traces-088759500358",
+                LANGFUSE_S3_EVENT_UPLOAD_REGION="us-east-1",
+            )
+            langfuse_path = root / "langfuse.json"
+            langfuse_path.write_text(json.dumps(langfuse))
+            materialize(*sources, "db.example.test", 5432, output, langfuse_path)
+            obs = (output / "observability.env").read_text()
+            self.assertIn("postgresql://langfuse_app:trace%40%25%2F%26secret@db.example.test:5432/langfuse?sslmode=require", obs)
+            self.assertNotIn("master-secret", obs)
+            self.assertEqual("xml<&>", ET.parse(output / "config.xml").findtext("password"))
+            self.assertEqual((output / "config.xml").stat().st_mode & 0o777, 0o600)
+            langfuse["LANGFUSE_INIT_PROJECT_SECRET_KEY"] = "mismatch"
+            langfuse_path.write_text(json.dumps(langfuse))
+            with self.assertRaisesRegex(SystemExit, "settings do not match"):
+                materialize(*sources, "db.example.test", 5432, output, langfuse_path)
+
 
             app_env = (output / "application.env").read_text()
             bootstrap_env = (output / "bootstrap.env").read_text()

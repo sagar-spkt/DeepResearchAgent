@@ -219,6 +219,7 @@ resource "aws_iam_role_policy" "staging_deploy" {
           "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/application-*",
           "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/vllm-*",
           "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/web-*",
+          "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:deepresearch-staging/langfuse-WYpY5u",
         ]
       },
       {

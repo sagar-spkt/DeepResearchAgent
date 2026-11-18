@@ -10,6 +10,9 @@ spec:
     matchLabels: { app: observability, component: langfuse-{{ $name }} }
   template:
     metadata:
+      {{- if $root.Values.secretRevision }}
+      annotations: { deepresearch/secret-revision: {{ $root.Values.secretRevision | quote }} }
+      {{- end }}
       labels: { app: observability, component: langfuse-{{ $name }} }
     spec:
       serviceAccountName: research-observability

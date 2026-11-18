@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import re
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 from pathlib import Path
 
 APP_KEYS = {
@@ -26,6 +28,15 @@ APP_KEYS = {
 WEB_KEYS = {"APP_BASE_URL", "AUTH_SESSION_SECRET", "COGNITO_CLIENT_ID", "COGNITO_DOMAIN"}
 VLLM_KEYS = {"VLLM_API_KEY"}
 RDS_KEYS = {"username", "password"}
+LANGFUSE_KEYS = {
+    "CLICKHOUSE_PASSWORD", "CLICKHOUSE_USER", "DATABASE_URL", "ENCRYPTION_KEY",
+    "LANGFUSE_INIT_ORG_ID", "LANGFUSE_INIT_ORG_NAME", "LANGFUSE_INIT_PROJECT_ID",
+    "LANGFUSE_INIT_PROJECT_NAME", "LANGFUSE_INIT_PROJECT_PUBLIC_KEY",
+    "LANGFUSE_INIT_PROJECT_SECRET_KEY", "LANGFUSE_INIT_USER_EMAIL",
+    "LANGFUSE_INIT_USER_NAME", "LANGFUSE_INIT_USER_PASSWORD",
+    "LANGFUSE_S3_EVENT_UPLOAD_BUCKET", "LANGFUSE_S3_EVENT_UPLOAD_REGION",
+    "NEXTAUTH_SECRET", "NEXTAUTH_URL", "SALT",
+}
 ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -71,6 +82,7 @@ def materialize(
     database_host: str,
     database_port: int,
     output_dir: Path,
+    langfuse_path: Path | None = None,
 ) -> None:
     application = _read_object(application_path, "application")
     web = _read_object(web_path, "web")
@@ -102,11 +114,46 @@ def materialize(
         raise SystemExit("Application and vLLM API keys do not match")
     if application["COGNITO_CLIENT_ID"] != web["COGNITO_CLIENT_ID"]:
         raise SystemExit("Application and web Cognito client IDs do not match")
-    if not database_host or not 1 <= database_port <= 65535:
+    if not re.fullmatch(r"[a-zA-Z0-9.-]+", database_host) or not 1 <= database_port <= 65535:
         raise SystemExit("Database endpoint is invalid")
 
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(output_dir, 0o700)
+    # Both databases are created by bootstrap_db using these passwords. Bind
+    # clients to the currently described RDS endpoint on every deployment.
+    endpoint = f"{database_host}:{database_port}"
+    application["DATABASE_URL"] = (
+        f"postgresql+psycopg://research_app:{quote(application['APP_DB_PASSWORD'], safe='')}"
+        f"@{endpoint}/research?sslmode=require"
+    )
+    if langfuse_path is not None:
+        langfuse = _read_object(langfuse_path, "Langfuse")
+        _validate_environment(langfuse, LANGFUSE_KEYS, "Langfuse", LANGFUSE_KEYS)
+        if not all(langfuse.values()):
+            raise SystemExit("Langfuse contains an empty required setting")
+        if (
+            langfuse["LANGFUSE_INIT_PROJECT_PUBLIC_KEY"] != application.get("LANGFUSE_PUBLIC_KEY")
+            or langfuse["LANGFUSE_INIT_PROJECT_SECRET_KEY"] != application.get("LANGFUSE_SECRET_KEY")
+            or application.get("LANGFUSE_BASE_URL") != "http://langfuse:3000"
+        ):
+            raise SystemExit("Application and private Langfuse project settings do not match")
+        if (
+            langfuse["LANGFUSE_S3_EVENT_UPLOAD_BUCKET"] != "deepresearch-staging-traces-088759500358"
+            or langfuse["LANGFUSE_S3_EVENT_UPLOAD_REGION"] != "us-east-1"
+        ):
+            raise SystemExit("Langfuse trace storage is outside staging")
+        langfuse["DATABASE_URL"] = (
+            f"postgresql://langfuse_app:{quote(application['LANGFUSE_DB_PASSWORD'], safe='')}"
+            f"@{endpoint}/langfuse?sslmode=require"
+        )
+        langfuse["NEXTAUTH_URL"] = "https://observability.staging.research.spktsagar.com"
+        _write_env(output_dir / "observability.env", langfuse)
+        config = ET.Element("config")
+        ET.SubElement(config, "user").text = langfuse["CLICKHOUSE_USER"]
+        ET.SubElement(config, "password").text = langfuse["CLICKHOUSE_PASSWORD"]
+        client_path = output_dir / "config.xml"
+        ET.ElementTree(config).write(client_path, encoding="utf-8", xml_declaration=True)
+        client_path.chmod(0o600)
     _write_env(
         output_dir / "application.env",
         {key: value for key, value in application.items() if key in APP_KEYS},
@@ -136,6 +183,7 @@ def main() -> None:
     parser.add_argument("--application-json", type=Path, required=True)
     parser.add_argument("--web-json", type=Path, required=True)
     parser.add_argument("--vllm-json", type=Path, required=True)
+    parser.add_argument("--langfuse-json", type=Path, required=True)
     parser.add_argument("--rds-json", type=Path, required=True)
     parser.add_argument("--database-host", required=True)
     parser.add_argument("--database-port", type=int, required=True)
@@ -149,6 +197,7 @@ def main() -> None:
         args.database_host,
         args.database_port,
         args.output_dir,
+        args.langfuse_json,
     )
 
 

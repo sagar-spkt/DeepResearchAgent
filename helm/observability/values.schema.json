@@ -45,6 +45,13 @@
       "type": "string",
       "maxLength": 253,
       "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    },
+    "createStorageClasses": {
+      "type": "boolean"
+    },
+    "secretRevision": {
+      "type": "string",
+      "pattern": "^([a-f0-9]{64})?$"
     }
   }
 }

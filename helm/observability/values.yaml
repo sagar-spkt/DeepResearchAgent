@@ -7,5 +7,7 @@
   "storageClass": "deepresearch-observability-gp3",
   "environment": "",
   "sessionId": "",
-  "clickhouseClientSecretName": "research-clickhouse-client"
+  "clickhouseClientSecretName": "research-clickhouse-client",
+  "createStorageClasses": true,
+  "secretRevision": ""
 }

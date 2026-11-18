@@ -11,6 +11,9 @@ spec:
     matchLabels: { app: observability, component: {{ $name }} }
   template:
     metadata:
+      {{- if and $root.Values.secretRevision (eq $name "clickhouse") }}
+      annotations: { deepresearch/secret-revision: {{ $root.Values.secretRevision | quote }} }
+      {{- end }}
       labels: { app: observability, component: {{ $name }} }
     spec:
       automountServiceAccountToken: false
@@ -25,8 +28,11 @@ spec:
           command: ["valkey-server", "--appendonly", "yes"]
           ports: [{ name: redis, containerPort: 6379 }]
           {{- else }}
-          envFrom: [{ secretRef: { name: {{ $root.Values.secretName }} } }]
           env:
+            - name: CLICKHOUSE_USER
+              valueFrom: { secretKeyRef: { name: {{ $root.Values.secretName }}, key: CLICKHOUSE_USER } }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $root.Values.secretName }}, key: CLICKHOUSE_PASSWORD } }
             - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
           ports: [{ name: http, containerPort: 8123 }, { name: native, containerPort: 9000 }]
           {{- end }}

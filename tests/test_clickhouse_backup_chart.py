@@ -43,6 +43,13 @@ class ClickHouseBackupChartTests(unittest.TestCase):
         self.assertIn("<use_environment_credentials>true</use_environment_credentials>", result.stdout)
         self.assertNotIn("<password>", result.stdout)
 
+    def test_namespaced_install_references_operator_storage_classes(self):
+        result = self.render("--set", "createStorageClasses=false")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("kind: StorageClass", result.stdout)
+        for component in ("clickhouse", "valkey"):
+            self.assertIn(f'storageClassName: "deepresearch-observability-gp3-{component}"', result.stdout)
+
     def test_client_config_secret_cannot_be_empty_or_injected(self):
         for value in ["", "bad/name", "bad name"]:
             with self.subTest(value=value):
