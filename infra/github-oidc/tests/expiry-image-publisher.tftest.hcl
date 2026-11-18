@@ -32,7 +32,7 @@ run "expiry_image_publisher_is_repository_and_image_scoped" {
   }
 
   assert {
-    condition     = toset(jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[0].Action) == toset(["ecr:GetAuthorizationToken"]) && jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[0].Resource == "*" && toset(jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[1].Action) == toset(["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"]) && jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[1].Resource == "arn:aws:ecr:${var.region}:123456789012:repository/deepresearch-staging/expiry-runner"
+    condition     = toset(jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[0].Action) == toset(["ecr:GetAuthorizationToken"]) && jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[0].Resource == "*" && toset(jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[1].Action) == toset(["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"]) && jsondecode(aws_iam_role_policy.staging_expiry_image_publisher.policy).Statement[1].Resource == "arn:aws:ecr:${var.region}:123456789012:repository/deepresearch-staging/expiry-runner"
     error_message = "The publisher may authenticate to ECR and push layers/images only to the staging expiry-runner repository."
   }
 
