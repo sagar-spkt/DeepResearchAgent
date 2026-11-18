@@ -25,6 +25,7 @@ resource "aws_iam_role_policy_attachment" "cluster" {
 resource "aws_eks_cluster" "main" {
 
   name     = local.name
+  tags     = { Name = local.name }
   role_arn = aws_iam_role.cluster.arn
   version  = var.kubernetes_version
   upgrade_policy {
@@ -47,7 +48,7 @@ resource "aws_eks_cluster" "main" {
   }
 
   enabled_cluster_log_types = ["api", "audit", "authenticator"]
-  depends_on                = [aws_iam_role_policy_attachment.cluster]
+  depends_on                = [aws_iam_role_policy_attachment.cluster, aws_cloudwatch_log_group.cluster]
 
 }
 

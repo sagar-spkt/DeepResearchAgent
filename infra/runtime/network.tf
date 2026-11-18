@@ -94,6 +94,7 @@ resource "aws_vpc_security_group_ingress_rule" "database" {
 
   security_group_id            = aws_security_group.database.id
   referenced_security_group_id = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  tags                         = { Component = "database-ingress" }
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"

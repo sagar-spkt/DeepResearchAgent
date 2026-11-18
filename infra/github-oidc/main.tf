@@ -599,8 +599,8 @@ locals {
       Sid       = "CreateOnlyTaggedStagingEKSCluster"
       Effect    = "Allow"
       Action    = ["eks:CreateCluster"]
-      Resource  = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/deepresearch-staging"
-      Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestedRegion" = var.region }) }
+      Resource  = "*" # EKS CreateCluster does not support resource-level authorization.
+      Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestedRegion" = var.region, "eks:authenticationMode" = "API", "eks:supportType" = "STANDARD", "aws:RequestTag/Name" = "deepresearch-staging" }), Bool = { "eks:bootstrapClusterCreatorAdminPermissions" = "false" } }
     },
     {
       Sid       = "ManageSessionTaggedStagingEKSResources"
@@ -612,8 +612,8 @@ locals {
     {
       Sid       = "CreateSessionTaggedStagingDatabase"
       Effect    = "Allow"
-      Action    = ["rds:CreateDBInstance", "rds:CreateDBSubnetGroup"]
-      Resource  = ["arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:db:deepresearch-staging", "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:subgrp:deepresearch-staging-*"]
+      Action    = ["rds:CreateDBInstance", "rds:CreateDBSubnetGroup", "rds:AddTagsToResource"]
+      Resource  = ["arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:db:deepresearch-staging", "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:subgrp:deepresearch-staging"]
       Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestedRegion" = var.region }) }
     },
     {
@@ -634,23 +634,51 @@ locals {
       Sid       = "PassOnlyStagingServiceRoles"
       Effect    = "Allow"
       Action    = ["iam:PassRole"]
-      Resource  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-*"
-      Condition = { StringEquals = merge(local.staging_session_resource_tags, { "iam:PassedToService" = ["eks.amazonaws.com", "ec2.amazonaws.com", "pods.eks.amazonaws.com"] }) }
+      Resource  = [for role in ["cluster", "node", "ebs-csi", "application", "load-balancer-controller", "clickhouse-backup", "observability"] : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/deepresearch-staging-${role}"]
+      Condition = { StringEquals = { "iam:PassedToService" = ["eks.amazonaws.com", "ec2.amazonaws.com", "pods.eks.amazonaws.com"] } }
     },
   ]
   staging_runtime_service_statements = [
     {
+      Sid       = "CreateManagedRDSCredential"
+      Effect    = "Allow"
+      Action    = ["secretsmanager:CreateSecret", "secretsmanager:TagResource"]
+      Resource  = "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:rds!db-*"
+      Condition = { "ForAnyValue:StringEquals" = { "aws:CalledVia" = "rds.amazonaws.com" } }
+    },
+    {
+      Sid       = "DescribeDefaultDatabaseCredentialKey"
+      Effect    = "Allow"
+      Action    = ["kms:DescribeKey"]
+      Resource  = "arn:aws:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/*"
+      Condition = { "ForAnyValue:StringEquals" = { "kms:ResourceAliases" = ["alias/aws/secretsmanager", "alias/aws/rds"] } }
+    },
+    {
+      Sid       = "CreateTaggedDatabaseIngress"
+      Effect    = "Allow"
+      Action    = ["ec2:AuthorizeSecurityGroupIngress"]
+      Resource  = "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:security-group-rule/*"
+      Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestTag/Component" = "database-ingress" }) }
+    },
+    {
+      Sid       = "TagNewDatabaseIngress"
+      Effect    = "Allow"
+      Action    = ["ec2:CreateTags"]
+      Resource  = "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:security-group-rule/*"
+      Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestTag/Component" = "database-ingress", "ec2:CreateAction" = "AuthorizeSecurityGroupIngress" }) }
+    },
+    {
       Sid       = "CreateTaggedStagingLogs"
       Effect    = "Allow"
       Action    = ["logs:CreateLogGroup", "logs:TagResource"]
-      Resource  = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/eks/deepresearch-staging:*"
+      Resource  = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/eks/deepresearch-staging/cluster:*"
       Condition = { StringEquals = merge(local.staging_resource_tags, { "aws:RequestedRegion" = var.region }) }
     },
     {
       Sid       = "ManageTaggedStagingLogs"
       Effect    = "Allow"
       Action    = ["logs:PutRetentionPolicy"]
-      Resource  = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/eks/deepresearch-staging:*"
+      Resource  = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/eks/deepresearch-staging/cluster:*"
       Condition = { StringEquals = merge(local.staging_session_resource_tags, { "aws:RequestedRegion" = var.region }) }
     }
   ]
