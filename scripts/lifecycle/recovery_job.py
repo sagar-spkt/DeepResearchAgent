@@ -126,6 +126,13 @@ def run_restore_verifier(
             raise Refused("Research API verifier image, service account, or secret is not immutable and exact")
 
         access = adapter.open_restore_verifier_ingress(plan, restore_receipt)
+        source_endpoint = access.get("source_database_endpoint")
+        if (
+            not isinstance(source_endpoint, str)
+            or not re.fullmatch(r"[a-zA-Z0-9.-]+\.rds\.amazonaws\.com", source_endpoint)
+            or source_endpoint == target_endpoint
+        ):
+            raise Refused("Provider-verified source endpoint is missing or aliases the clone")
         secret = {
             "apiVersion": "v1",
             "kind": "Secret",
@@ -177,6 +184,7 @@ def run_restore_verifier(
                             ],
                             "env": [
                                 *containers[0].get("env", []),
+                                {"name": "RECOVERY_SOURCE_DATABASE_ENDPOINT", "value": source_endpoint},
                                 {"name": "RECOVERY_TARGET_DATABASE_ENDPOINT", "value": target_endpoint},
                             ],
                             "envFrom": env_from,
@@ -199,6 +207,8 @@ def run_restore_verifier(
         if (
             result.get("operation") != "application-recovery-verification-receipt"
             or result.get("restore_receipt_sha256") != digest(restore_receipt)
+            or result.get("source_database_endpoint") != source_endpoint
+            or result.get("target_database_endpoint") != target_endpoint
             or not isinstance(result.get("fixture_manifest_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", result["fixture_manifest_sha256"])
             or result.get("application_data_verified") is not True
@@ -206,6 +216,7 @@ def run_restore_verifier(
         ):
             raise Refused("In-cluster recovery verifier returned an incomplete or mismatched receipt")
         result["temporary_ingress_source_security_group_ids"] = access["source_security_group_ids"]
+        result["source_database_endpoint"] = source_endpoint
         result["temporary_ingress_removed"] = True
         return result
     except Exception as exc:

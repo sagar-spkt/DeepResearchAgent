@@ -831,6 +831,14 @@ class AWSAdapter:
             )
         ):
             raise Refused("Staging source database identity or private state does not match")
+        source_endpoint = source_db.get("Endpoint", {}).get("Address")
+        if (
+            not isinstance(source_endpoint, str)
+            or not re.fullmatch(r"[a-zA-Z0-9.-]+\.rds\.amazonaws\.com", source_endpoint)
+            or source_db.get("Endpoint", {}).get("Port") != 5432
+            or source_endpoint == restore_receipt.get("target_database_endpoint")
+        ):
+            raise Refused("Source database endpoint is invalid or aliases the restored clone")
         source_db_sgs = self.clients["ec2"].describe_security_groups(
             GroupIds=source_db_sg_ids
         ).get("SecurityGroups", [])
@@ -916,6 +924,7 @@ class AWSAdapter:
             "source_security_group_ids": source_ids,
             "security_group_rule_ids": rule_ids,
             "target_database_identifier": plan["target_database_identifier"],
+            "source_database_endpoint": source_endpoint,
         }
 
     def close_restore_verifier_ingress(self, access):

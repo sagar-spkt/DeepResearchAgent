@@ -33,7 +33,10 @@ class FakeAdapter:
 
     def open_restore_verifier_ingress(self, plan, restore_receipt):
         self.calls.append("open")
-        return {"source_security_group_ids": ["sg-12345678"]}
+        return {
+            "source_security_group_ids": ["sg-12345678"],
+            "source_database_endpoint": "source.abcdefghijkl.us-east-1.rds.amazonaws.com",
+        }
 
     def close_restore_verifier_ingress(self, access):
         self.calls.append("close")
@@ -52,7 +55,7 @@ class FakeAdapter:
         if args[0] == "wait" and self.fail_at == "wait":
             raise RuntimeError("job failed")
         if args[0] == "exec":
-            return '{"operation":"application-recovery-verification-receipt","restore_receipt_sha256":"' + digest(RESTORE) + '","fixture_manifest_sha256":"' + ('a' * 64) + '","application_data_verified":true,"retrieval_verified":true}'
+            return '{"operation":"application-recovery-verification-receipt","restore_receipt_sha256":"' + digest(RESTORE) + '","source_database_endpoint":"source.abcdefghijkl.us-east-1.rds.amazonaws.com","target_database_endpoint":"restore.abcdefghijkl.us-east-1.rds.amazonaws.com","fixture_manifest_sha256":"' + ('a' * 64) + '","application_data_verified":true,"retrieval_verified":true}'
         return ""
 
 
@@ -197,6 +200,8 @@ class FakeASG:
 
 
 class FakeSourceRDS:
+    source_endpoint = "source.abcdefghijkl.us-east-1.rds.amazonaws.com"
+
     def describe_db_instances(self, **kwargs):
         if kwargs.get("DBInstanceIdentifier", "").endswith("-restore-session-1"):
             return {
@@ -220,6 +225,7 @@ class FakeSourceRDS:
                 "StorageEncrypted": True,
                 "DBSubnetGroup": {"VpcId": "vpc-12345678"},
                 "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-c3333333", "Status": "active"}],
+                "Endpoint": {"Address": self.source_endpoint, "Port": 5432},
             }]
         }
 
@@ -258,6 +264,7 @@ class RestoreVerifierIngressTests(unittest.TestCase):
     def test_opens_only_live_node_security_groups_on_postgres(self):
         access = self.adapter.open_restore_verifier_ingress(self.plan, RESTORE)
         self.assertEqual(["sg-a1111111", "sg-b2222222"], access["source_security_group_ids"])
+        self.assertEqual(FakeSourceRDS.source_endpoint, access["source_database_endpoint"])
         self.assertEqual(2, len(self.adapter.network.authorized))
         for request in self.adapter.network.authorized:
             permission = request["IpPermissions"][0]
@@ -296,6 +303,12 @@ class RestoreVerifierIngressTests(unittest.TestCase):
     def test_refuses_when_paused_source_db_does_not_allow_verifier_nodes(self):
         self.adapter.network.source_db_access = False
         with self.assertRaisesRegex(Refused, "does not admit every verifier node"):
+            self.adapter.open_restore_verifier_ingress(self.plan, RESTORE)
+        self.assertEqual([], self.adapter.network.authorized)
+
+    def test_refuses_provider_verified_source_endpoint_equal_to_clone(self):
+        self.adapter.clients["rds"].source_endpoint = RESTORE["target_database_endpoint"]
+        with self.assertRaisesRegex(Refused, "aliases the restored clone"):
             self.adapter.open_restore_verifier_ingress(self.plan, RESTORE)
         self.assertEqual([], self.adapter.network.authorized)
 

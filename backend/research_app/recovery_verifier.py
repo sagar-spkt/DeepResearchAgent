@@ -270,15 +270,27 @@ def verify_restored_fixture(factory, settings, manifest, restore_receipt, target
 
 def rehearse_source_and_restore(
     source_factory, target_factory, settings, backup_receipt, restore_receipt,
-    user_email, conversation_id, query, target_endpoint,
+    user_email, conversation_id, query, source_endpoint, target_endpoint,
 ):
     """Capture the paused source fixture and compare it to the exact restore."""
+    if (
+        not isinstance(source_endpoint, str)
+        or not isinstance(target_endpoint, str)
+        or source_endpoint == target_endpoint
+    ):
+        raise VerificationError("Source database and restored clone must have distinct verified endpoints")
+    for factory, endpoint in ((source_factory, source_endpoint), (target_factory, target_endpoint)):
+        bind = getattr(factory, "kw", {}).get("bind")
+        if bind is not None and bind.url.drivername.startswith("postgresql") and bind.url.host != endpoint:
+            raise VerificationError("Database connection host does not match its provider-verified endpoint")
     manifest = capture_manifest(
         source_factory, settings, backup_receipt, user_email, conversation_id, query
     )
-    return verify_restored_fixture(
+    receipt = verify_restored_fixture(
         target_factory, settings, manifest, restore_receipt, target_endpoint
     )
+    receipt["source_database_endpoint"] = source_endpoint
+    return receipt
 
 
 def _load_json(path):
@@ -298,12 +310,12 @@ def _write_private(path, value):
         stream.write("\n")
 
 
-def _factory(settings, target_endpoint=None):
+def _factory(settings, database_endpoint=None):
     url = make_url(settings.database_url)
-    if target_endpoint is not None:
+    if database_endpoint is not None:
         if not url.drivername.startswith("postgresql") or url.port not in (None, 5432):
             raise VerificationError("Verifier requires the protected PostgreSQL application credential")
-        url = url.set(host=target_endpoint, port=5432)
+        url = url.set(host=database_endpoint, port=5432)
     options = {"connect_args": {}}
     if url.drivername.startswith("postgresql"):
         options["connect_args"]["options"] = "-c default_transaction_read_only=on"
@@ -356,13 +368,14 @@ def main():
         _write_private(args.output, receipt)
         print(json.dumps({"artifact": args.output, "sha256": digest(receipt)}))
     else:
+        source_endpoint = os.environ.get("RECOVERY_SOURCE_DATABASE_ENDPOINT")
         target_endpoint = os.environ.get("RECOVERY_TARGET_DATABASE_ENDPOINT")
-        if not target_endpoint:
-            raise VerificationError("Recovery rehearsal requires the exact target endpoint")
+        if not source_endpoint or not target_endpoint or source_endpoint == target_endpoint:
+            raise VerificationError("Recovery rehearsal requires distinct provider-verified source and target endpoints")
         backup_receipt = _load_json(args.backup_receipt)
         restore_receipt = _load_json(args.restore_receipt)
         request = _load_json(args.request)
-        source_factory = _factory(settings)
+        source_factory = _factory(settings, source_endpoint)
         target_factory = _factory(settings, target_endpoint)
         receipt = rehearse_source_and_restore(
             source_factory,
@@ -373,6 +386,7 @@ def main():
             request.get("user_email", ""),
             request.get("conversation_id", ""),
             request.get("query", ""),
+            source_endpoint,
             target_endpoint,
         )
         _write_private(args.output, receipt)

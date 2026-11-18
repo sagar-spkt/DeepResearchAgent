@@ -198,6 +198,7 @@ def test_rehearse_captures_paused_source_then_compares_exact_restore(fixture_db)
         USER_EMAIL,
         CONVERSATION_ID,
         "blue heron archive",
+        "deepresearch-staging.abcdefghijkl.us-east-1.rds.amazonaws.com",
         RESTORE["target_database_endpoint"],
     )
     assert receipt["application_data_verified"] is True
@@ -256,3 +257,52 @@ def test_verifier_endpoint_override_changes_only_the_postgres_host(fixture_db):
     assert bind.url.password == "secret"
     assert bind.url.database == "research"
     assert bind.url.query == {}
+    source_endpoint = "source.abcdefghijkl.us-east-1.rds.amazonaws.com"
+    source_factory = _factory(settings, source_endpoint)
+    assert source_factory.kw["bind"].url.host == source_endpoint
+    assert source_factory.kw["bind"].url.host != bind.url.host
+
+
+def test_rehearse_refuses_source_and_clone_self_comparison(fixture_db):
+    settings, factory = fixture_db
+    endpoint = RESTORE["target_database_endpoint"]
+    with pytest.raises(VerificationError, match="must have distinct verified endpoints"):
+        rehearse_source_and_restore(
+            factory,
+            factory,
+            settings,
+            BACKUP,
+            RESTORE,
+            USER_EMAIL,
+            CONVERSATION_ID,
+            "blue heron archive",
+            endpoint,
+            endpoint,
+        )
+
+
+def test_rehearse_refuses_factory_connected_to_wrong_source_host(fixture_db):
+    settings, factory = fixture_db
+    wrong_engine = create_engine(
+        "postgresql+psycopg://fixture@clone.abcdefghijkl.us-east-1.rds.amazonaws.com:5432/research"
+    )
+
+    class FactoryWithWrongBind:
+        kw = {"bind": wrong_engine}
+
+        def __call__(self, *args, **kwargs):
+            return factory(*args, **kwargs)
+
+    with pytest.raises(VerificationError, match="does not match its provider-verified endpoint"):
+        rehearse_source_and_restore(
+            FactoryWithWrongBind(),
+            factory,
+            settings,
+            BACKUP,
+            RESTORE,
+            USER_EMAIL,
+            CONVERSATION_ID,
+            "blue heron archive",
+            "source.abcdefghijkl.us-east-1.rds.amazonaws.com",
+            RESTORE["target_database_endpoint"],
+        )
