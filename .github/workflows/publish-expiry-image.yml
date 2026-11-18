@@ -101,13 +101,13 @@
           "id": "image",
           "uses": "docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83",
           "with": {
-            "context": ".",
+            "context": "infra/expiry/runner",
             "file": "infra/expiry/runner/Dockerfile",
             "platforms": "linux/amd64",
             "push": true,
             "provenance": true,
             "sbom": true,
-            "tags": "${{ steps.ecr.outputs.registry }}/${{ env.ECR_EXPIRY_RUNNER }}:sha-${{ github.sha }}"
+            "tags": "${{ steps.ecr.outputs.registry }}/${{ env.ECR_EXPIRY_RUNNER }}:sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
           }
         },
         {
