@@ -85,7 +85,7 @@ _DESTROY_ACTIONS = {
     "aws_route_table": ["ec2:DeleteRouteTable"],
     "aws_route_table_association": ["ec2:DisassociateRouteTable"],
     "aws_security_group": ["ec2:DeleteSecurityGroup"],
-    "aws_vpc_security_group_ingress_rule": ["ec2:RevokeSecurityGroupIngress", "ec2:DeleteSecurityGroupRule"],
+    "aws_vpc_security_group_ingress_rule": ["ec2:RevokeSecurityGroupIngress"],
     "aws_db_subnet_group": ["rds:DeleteDBSubnetGroup"],
     # The shutdown workflow clears deletion protection immediately before the
     # already-reviewed destroy plan is applied.
@@ -153,6 +153,11 @@ def _runtime_resource_arn(item, config):
         if name == f"/aws/eks/deepresearch-{config['environment']}/cluster":
             return f"arn:aws:logs:{region}:{account}:log-group:{name}:*"
         raise Refused("Runtime log group is not the exact EKS cluster log group")
+    if kind == "aws_vpc_security_group_ingress_rule":
+        security_group_id = before.get("security_group_id")
+        if not isinstance(security_group_id, str) or not re.fullmatch(r"sg-[a-f0-9]{8,17}", security_group_id):
+            raise Refused("Runtime ingress rule is missing its exact parent security group")
+        return f"arn:aws:ec2:{region}:{account}:security-group/{security_group_id}"
     resource_types = {
         "aws_vpc": ("vpc", "id"),
         "aws_internet_gateway": ("internet-gateway", "id"),
@@ -160,7 +165,6 @@ def _runtime_resource_arn(item, config):
         "aws_route_table": ("route-table", "id"),
         "aws_route_table_association": ("route-table", "route_table_id"),
         "aws_security_group": ("security-group", "id"),
-        "aws_vpc_security_group_ingress_rule": ("security-group-rule", "id"),
     }
     if kind in resource_types:
         resource_type, field = resource_types[kind]
@@ -169,6 +173,48 @@ def _runtime_resource_arn(item, config):
             raise Refused("Runtime EC2 resource is missing its exact identity: " + item["address"])
         return f"arn:aws:ec2:{region}:{account}:{resource_type}/{identifier}"
     raise Refused("No exact IAM ARN mapping for runtime resource: " + item["address"])
+
+
+def _iam_inventory_resources(changes, config):
+    """Return only IAM roles and policies present in this runtime plan plus expiry roles."""
+    account, environment = config["account_id"], config["environment"]
+    role_prefix = f"arn:aws:iam::{account}:role/deepresearch-{environment}-"
+    managed_prefix = f"arn:aws:iam::{account}:policy/deepresearch-{environment}-"
+    role_arns = set()
+    policy_arns = set()
+    for item in changes.values():
+        kind = item.get("type", "")
+        before = item.get("change", {}).get("before") or {}
+        if kind == "aws_iam_role":
+            arn = before.get("arn")
+            if not isinstance(arn, str) or not arn.startswith(role_prefix):
+                raise Refused("Runtime IAM role inventory identity is outside the environment scope")
+            role_arns.add(arn)
+        elif kind == "aws_iam_role_policy":
+            role = before.get("role")
+            if not isinstance(role, str) or not re.fullmatch(rf"deepresearch-{re.escape(environment)}-[a-z0-9-]+", role):
+                raise Refused("Runtime inline IAM policy is missing its exact environment role")
+            role_arns.add(f"arn:aws:iam::{account}:role/{role}")
+        elif kind == "aws_iam_role_policy_attachment":
+            role, policy = before.get("role"), before.get("policy_arn")
+            if not isinstance(role, str) or not re.fullmatch(rf"deepresearch-{re.escape(environment)}-[a-z0-9-]+", role):
+                raise Refused("Runtime IAM attachment is missing its exact environment role")
+            if not isinstance(policy, str) or not (
+                policy.startswith("arn:aws:iam::aws:policy/")
+                or policy.startswith(managed_prefix)
+            ):
+                raise Refused("Runtime IAM attachment policy is outside the reviewed AWS/environment scope")
+            role_arns.add(f"arn:aws:iam::{account}:role/{role}")
+            policy_arns.add(policy)
+        elif kind == "aws_iam_policy":
+            arn = before.get("arn")
+            if not isinstance(arn, str) or not arn.startswith(managed_prefix):
+                raise Refused("Runtime managed IAM policy inventory identity is outside the environment scope")
+            policy_arns.add(arn)
+
+    expiry_base = f"arn:aws:iam::{account}:role/deepresearch-{environment}-expiry-{config['session_id']}"
+    role_arns.update({expiry_base, expiry_base + "-states", expiry_base + "-scheduler"})
+    return sorted(role_arns), sorted(policy_arns)
 
 
 def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
@@ -204,12 +250,10 @@ def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
         statements.append(statement)
 
     # The executor locks the exact runtime state while applying the saved plan.
-    allow(
-        "MaintainExactRuntimeStateAndLock",
-        ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-        [state_object, state_object + ".tflock"],
-        {"Bool": {"aws:SecureTransport": "true"}},
-    )
+    allow("MaintainExactRuntimeState", ["s3:GetObject", "s3:PutObject"], [state_object],
+          {"Bool": {"aws:SecureTransport": "true"}})
+    allow("MaintainExactRuntimeStateLock", ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          [state_object + ".tflock"], {"Bool": {"aws:SecureTransport": "true"}})
     allow(
         "ListExactRuntimeStateAndLock",
         ["s3:ListBucket"],
@@ -248,11 +292,18 @@ def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
             ["*"],
             {"StringEquals": {"aws:RequestedRegion": region}},
         )
-    allow(
-        "ReadRuntimeIAMInventory",
-        ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListRoleTags", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListPolicies"],
-        ["*"],
-    )
+    role_arns, policy_arns = _iam_inventory_resources(changes, config)
+    allow("ReadRuntimeIAMRoles", [
+        "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies", "iam:ListRoleTags",
+    ], role_arns)
+    if policy_arns:
+        allow("ReadRuntimeIAMPolicies", [
+            "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions",
+        ], policy_arns)
+    # IAM ListPolicies has no resource-level authorization. Inventory uses its
+    # Local scope to detect any leftover project-owned policy after teardown.
+    allow("ListLocalIAMPoliciesForResidualInventory", ["iam:ListPolicies"], ["*"])
     allow(
         "ReadHistoricalStagingVolumeReceipts",
         ["dynamodb:GetItem"],

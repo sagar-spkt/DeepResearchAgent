@@ -24,13 +24,13 @@ class PrepareExpiryInfraTests(unittest.TestCase):
         self.archive.write_bytes(b"private reviewed archive")
         self.kms = "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111"
         self.version = "version-abc123"
+        self.commands = []
 
     def runner(self, argv):
+        self.commands.append(argv)
         if argv[0] == "terraform":
             return json.dumps(self.runtime_plan)
         if argv[2] == "put-object":
-            return json.dumps({"VersionId": self.version})
-        if argv[2] == "head-object":
             data = self.archive.read_bytes()
             checksum = base64.b64encode(hashlib.sha256(data).digest()).decode()
             return json.dumps({
@@ -38,24 +38,30 @@ class PrepareExpiryInfraTests(unittest.TestCase):
                 "ServerSideEncryption": "aws:kms",
                 "SSEKMSKeyId": self.kms,
                 "ChecksumSHA256": checksum,
-                "ContentLength": len(data),
-                "Metadata": {"sha256": hashlib.sha256(data).hexdigest()},
             })
         raise AssertionError("unexpected command")
 
-    def test_upload_uses_content_addressed_version_and_verifies_head(self):
+    def test_upload_uses_content_addressed_version_and_put_response_checksum(self):
         result = upload_archive(self.archive, "expiry-source-123456789012", self.kms, "session-1", self.runner)
         self.assertEqual(result["version_id"], self.version)
         self.assertIn(result["sha256"], result["key"])
+        self.assertEqual(len(self.commands), 1)
+        self.assertEqual(self.commands[0][2], "put-object")
+        self.assertNotIn("--metadata", self.commands[0])
 
-    def test_upload_refuses_unversioned_or_mismatched_object(self):
-        with self.assertRaisesRegex(PreparationError, "non-null object VersionId"):
+    def test_upload_refuses_unversioned_or_mismatched_put_response(self):
+        with self.assertRaisesRegex(PreparationError, "exact version/KMS/checksum verification"):
             upload_archive(self.archive, "expiry-source-123456789012", self.kms, "session-1", lambda _: "{}")
-        def bad_head(argv):
-            return json.dumps({"VersionId": self.version, "ServerSideEncryption": "AES256"})
-        with self.assertRaisesRegex(PreparationError, "failed exact KMS/checksum verification"):
-            upload_archive(self.archive, "expiry-source-123456789012", self.kms, "session-1",
-                           lambda argv: json.dumps({"VersionId": self.version}) if argv[2] == "put-object" else bad_head(argv))
+        def bad_put(argv):
+            data = self.archive.read_bytes()
+            return json.dumps({
+                "VersionId": self.version,
+                "ServerSideEncryption": "AES256",
+                "SSEKMSKeyId": self.kms,
+                "ChecksumSHA256": base64.b64encode(hashlib.sha256(data).digest()).decode(),
+            })
+        with self.assertRaisesRegex(PreparationError, "failed exact version/KMS/checksum verification"):
+            upload_archive(self.archive, "expiry-source-123456789012", self.kms, "session-1", bad_put)
 
     def write_json(self, name, value):
         path = self.root / name

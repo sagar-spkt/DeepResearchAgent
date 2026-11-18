@@ -57,25 +57,19 @@ def upload_archive(archive: Path, bucket: str, key_arn: str, session_id: str, ru
         "aws", "s3api", "put-object", "--bucket", bucket, "--key", key,
         "--body", str(archive.resolve()), "--server-side-encryption", "aws:kms",
         "--ssekms-key-id", key_arn, "--checksum-algorithm", "SHA256",
-        "--checksum-sha256", checksum, "--metadata", "sha256=" + sha256,
+        "--checksum-sha256", checksum,
         "--output", "json",
     ]))
     version = put.get("VersionId")
-    if not isinstance(version, str) or not version or version == "null":
-        raise PreparationError("Expiry source bucket must return a non-null object VersionId")
-    head = json.loads(runner([
-        "aws", "s3api", "head-object", "--bucket", bucket, "--key", key,
-        "--version-id", version, "--checksum-mode", "ENABLED", "--output", "json",
-    ]))
     if (
-        head.get("VersionId") != version
-        or head.get("ServerSideEncryption") != "aws:kms"
-        or head.get("SSEKMSKeyId") != key_arn
-        or head.get("ChecksumSHA256") != checksum
-        or head.get("ContentLength") != len(data)
-        or head.get("Metadata", {}).get("sha256") != sha256
+        not isinstance(version, str)
+        or not version
+        or version == "null"
+        or put.get("ServerSideEncryption") != "aws:kms"
+        or put.get("SSEKMSKeyId") != key_arn
+        or put.get("ChecksumSHA256") != checksum
     ):
-        raise PreparationError("Uploaded expiry source version failed exact KMS/checksum verification")
+        raise PreparationError("S3 PutObject response failed exact version/KMS/checksum verification")
     return {
         "bucket": bucket,
         "key": key,
