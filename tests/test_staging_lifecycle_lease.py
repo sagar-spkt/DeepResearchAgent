@@ -164,7 +164,7 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
         renew_finalizer("finalizer-owner", session_id, now=15500, runner=runner)
         self.assertEqual("15620", json.loads(calls[-1][calls[-1].index("--expression-attribute-values") + 1])[":expires"]["N"])
 
-    def test_finalizer_lease_rejects_early_expired_or_deployed_sessions(self):
+    def test_overdue_empty_session_can_close_but_deployed_session_cannot(self):
         session_id = "stg-20261117"
         items = {
             "active-session": {
@@ -185,15 +185,17 @@ class StagingLifecycleLeaseTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LeaseError, "only after the runtime deadline"):
             acquire_finalizer("owner", session_id, now=15399, runner=runner)
-        with self.assertRaisesRegex(LeaseError, "reservation has expired"):
-            acquire_finalizer("owner", session_id, now=22600, runner=runner)
+        acquire_finalizer("owner", session_id, now=22600, runner=runner)
+        values = json.loads(calls[-1][calls[-1].index("--expression-attribute-values") + 1])
+        self.assertEqual("22720", values[":expires"]["N"])
+        calls.clear()
         items[deployment_marker_key(session_id)] = {
             "key": {"S": deployment_marker_key(session_id)},
             "session_id": {"S": session_id},
             "environment": {"S": "staging"},
         }
         with self.assertRaisesRegex(LeaseError, "deployment marker exists"):
-            acquire_finalizer("owner", session_id, now=15400, runner=runner)
+            acquire_finalizer("owner", session_id, now=22600, runner=runner)
         self.assertFalse(any("update-item" in call for call in calls))
 
     def test_assert_and_renew_are_bound_to_owner_and_session(self):

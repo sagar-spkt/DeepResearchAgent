@@ -171,7 +171,9 @@ def assert_finalizer_window(start, instant):
     if instant < runtime_deadline:
         raise LeaseError("The staging finalizer may start only after the runtime deadline")
     if instant >= reservation_deadline:
-        raise LeaseError("The staging admission reservation has expired")
+        # An abandoned admission still owns billable management resources.
+        # Only the empty-session destroy workflow uses this short lease.
+        return instant + LEASE_SECONDS
     return reservation_deadline
 
 
