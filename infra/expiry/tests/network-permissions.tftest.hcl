@@ -5,8 +5,9 @@ mock_provider "aws" {
 }
 
 override_resource {
-  target = aws_cloudwatch_log_group.executor
-  values = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/codebuild/deepresearch-staging-expiry-test-1" }
+  override_during = plan
+  target          = aws_cloudwatch_log_group.executor
+  values          = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/codebuild/deepresearch-staging-expiry-test-1" }
 }
 
 variables {
