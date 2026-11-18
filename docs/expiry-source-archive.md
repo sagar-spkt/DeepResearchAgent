@@ -22,3 +22,20 @@ python3 scripts/package_expiry_archive.py \
 The command includes only the lifecycle Python sources, runtime Terraform source and provider lock, the expiry intent, exact saved plan, session-bound JSON variable file, and runtime backend config. The backend config is stored at `artifacts/runtime.backend.hcl` for expiry-time hash verification and at `infra/runtime/artifacts/runtime.backend.hcl` for the CodeBuild command's `terraform -chdir=infra/runtime init -backend-config=artifacts/runtime.backend.hcl`. Both archive entries contain identical bytes. It rejects symlinked inputs, traversal, mismatched plan/intent/session hashes, credential or unapproved runtime-variable fields, a state bucket that differs from both the intent and explicit approval, unencrypted or wrong-state backends, and an existing output path. Entries are sorted with fixed timestamps and stored without compression; identical inputs produce identical archive bytes. The newly created file uses mode `0600`, and the command prints only the archive path, SHA-256, and mode.
 
 The ZIP contains a Terraform binary plan and infrastructure identifiers, so treat it as private deployment material. Do not commit it, attach it to a public or ordinary GitHub artifact, or print its contents in logs. The expiry configuration must upload it directly to the designated versioned source bucket with the reviewed KMS key, then record and verify the exact S3 `VersionId` and object checksum before applying `infra/expiry`. The published CodeBuild image digest is only the image input; archive upload, expiry Terraform installation, executor policy review, and live readiness checks remain separate. Archive packaging and image publication do not make the expiry path ready or authorize application writers.
+
+## Prepare the expiry stack inputs
+
+After reviewing the immutable executor image and the runtime destroy plan, create a private JSON input file with exactly these fields: `approved_intent_sha256`, `runtime_state_bucket`, `management_vpc_id`, `management_subnet_ids`, `management_security_group_ids`, `source_bucket`, `source_kms_key_arn`, `runner_image_digest`, and `runner_repository_arn`. Values must come from the reviewed intent and current management/foundation outputs. The image value must be `repository@sha256:<64 lowercase hex digits>`, and the repository ARN, KMS key, and intent account/region must agree. Keep this file and the generated Terraform variables private.
+
+Run the preparation command from the repository root, providing the same reviewed workspace that produced the ZIP:
+
+```sh
+python3 scripts/prepare_expiry_infra.py \
+  --workspace "$PWD" \
+  --intent artifacts/expiry-intent.json \
+  --deployment-inputs local-data/aws-preflight/expiry-inputs.json \
+  --archive local-data/aws-preflight/expiry-source.zip \
+  --output local-data/aws-preflight/expiry.auto.tfvars.json
+```
+
+The command checks the archive's source files against the current checkout, verifies its exact intent, backend and saved plan, asks local Terraform to inspect that binary plan, and requires the inspected delete set to match the reviewed intent. It then explicitly uploads the ZIP under a content-addressed session key, requires a non-null S3 object version, and verifies the KMS key, SHA-256 checksum, size, and metadata for that exact version. It writes mode `0600` `infra/expiry` variables with the intent's four-hour `not_before` timestamp, exact uploaded object version, immutable image reference, separate management/runtime VPC IDs, and generated executor IAM policy. It never runs Terraform or applies the expiry stack. A failed upload or verification stops before variables are written; if the upload succeeded but later local file creation fails, the immutable uploaded version remains for operator reconciliation.
