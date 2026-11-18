@@ -992,7 +992,7 @@ def execute_database_restore(plan, receipt, approved_hash, adapter, instant=None
         )
     ):
         raise Refused("Restore plan cannot claim recovery acceptance")
-    adapter.restore_database_snapshot(plan, receipt)
+    restored = adapter.restore_database_snapshot(plan, receipt)
     approve(plan, approved_hash, instant)
     return {
         "version": 1,
@@ -1004,6 +1004,10 @@ def execute_database_restore(plan, receipt, approved_hash, adapter, instant=None
         "source_snapshot_identifier": plan["source_snapshot_identifier"],
         "source_snapshot_arn": plan["source_snapshot_arn"],
         "target_database_identifier": plan["target_database_identifier"],
+        "target_database_arn": restored["target_database_arn"],
+        "target_database_endpoint": restored["target_database_endpoint"],
+        "target_database_port": restored["target_database_port"],
+        "provider_verified": True,
         "database_restore_verified": True,
         "restore_rehearsed": False,
         "application_restore_rehearsed": False,

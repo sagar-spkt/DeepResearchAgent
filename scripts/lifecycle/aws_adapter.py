@@ -643,13 +643,302 @@ class AWSAdapter:
             raise Refused(
                 "Restored DB provider state does not match the approved private encrypted target"
             )
+        endpoint = instance.get("Endpoint", {})
+        address = endpoint.get("Address")
+        port = endpoint.get("Port")
+        if (
+            not isinstance(address, str)
+            or not re.fullmatch(r"[a-zA-Z0-9.-]+\.rds\.amazonaws\.com", address)
+            or port != 5432
+        ):
+            raise Refused("Restored DB endpoint is missing or is not a PostgreSQL RDS endpoint")
         return {
             "target_database_identifier": target,
             "target_database_arn": expected_arn,
+            "target_database_endpoint": address,
+            "target_database_port": port,
             "source_snapshot_identifier": plan["source_snapshot_identifier"],
             "source_snapshot_arn": plan["source_snapshot_arn"],
             "provider_verified": True,
         }
+
+    def open_restore_verifier_ingress(self, plan, restore_receipt):
+        """Temporarily admit only the live staging CPU node groups on PostgreSQL."""
+        self.require_lease()
+        config = plan.get("config", {})
+        if config.get("environment") != "staging":
+            raise Refused("Temporary restore verifier ingress is staging-only")
+        vpc_id = self.verify_private_restore_subnet_group(plan["db_subnet_group_name"])
+        groups = self.clients["ec2"].describe_security_groups(
+            Filters=[
+                {"Name": "group-name", "Values": [plan["restore_security_group_name"]]},
+                {"Name": "vpc-id", "Values": [vpc_id]},
+            ]
+        ).get("SecurityGroups", [])
+        if len(groups) != 1:
+            raise Refused("Isolated restore security group was not uniquely found")
+        target = groups[0]
+        expected_tags = {
+            **plan["tags"],
+            "Component": "database-restore-security-group",
+        }
+        if (
+            not isinstance(target.get("GroupId"), str)
+            or not re.fullmatch(r"sg-[0-9a-f]{8,17}", target["GroupId"])
+            or target.get("VpcId") != vpc_id
+            or {item["Key"]: item["Value"] for item in target.get("Tags", [])}
+            != expected_tags
+            or target.get("IpPermissions") != []
+            or target.get("IpPermissionsEgress") != []
+        ):
+            raise Refused("Restore verifier target security group is not isolated")
+        target_dbs = self.clients["rds"].describe_db_instances(
+            DBInstanceIdentifier=plan["target_database_identifier"]
+        ).get("DBInstances", [])
+        if len(target_dbs) != 1:
+            raise Refused("Restored database target was not uniquely identified")
+        target_db = target_dbs[0]
+        if (
+            target_db.get("DBInstanceIdentifier") != plan["target_database_identifier"]
+            or target_db.get("DBInstanceArn")
+            != f"arn:aws:rds:{config['region']}:{config['account_id']}:db:{plan['target_database_identifier']}"
+            or target_db.get("DBInstanceStatus") != "available"
+            or target_db.get("StorageEncrypted") is not True
+            or target_db.get("PubliclyAccessible") is not False
+            or target_db.get("DBSubnetGroup", {}).get("DBSubnetGroupName")
+            != plan["db_subnet_group_name"]
+            or target_db.get("Endpoint", {}).get("Address")
+            != restore_receipt.get("target_database_endpoint")
+            or target_db.get("Endpoint", {}).get("Port") != 5432
+            or target_db.get("VpcSecurityGroups")
+            != [{"VpcSecurityGroupId": target["GroupId"], "Status": "active"}]
+        ):
+            raise Refused("Restored database no longer matches its provider-verified receipt")
+        target_db_tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=target_db["DBInstanceArn"]
+            ).get("TagList", [])
+        }
+        if any(target_db_tags.get(key) != value for key, value in plan["tags"].items()):
+            raise Refused("Restored database tags no longer match the approved receipt")
+
+        cluster = self.clients["eks"].describe_cluster(name=config["cluster_name"])["cluster"]
+        expected_cluster_arn = (
+            f"arn:aws:eks:{config['region']}:{config['account_id']}:cluster/{config['cluster_name']}"
+        )
+        cluster_vpc = cluster.get("resourcesVpcConfig", {}).get("vpcId")
+        if (
+            cluster.get("arn") != expected_cluster_arn
+            or cluster.get("status") != "ACTIVE"
+            or cluster.get("tags", {}).get("Project") != "deepresearch"
+            or cluster.get("tags", {}).get("Environment") != "staging"
+            or cluster.get("tags", {}).get("Session") != config["session_id"]
+            or cluster_vpc != vpc_id
+        ):
+            raise Refused("Verifier EKS cluster identity or session tags do not match")
+        nodegroup = self.clients["eks"].describe_nodegroup(
+            clusterName=config["cluster_name"], nodegroupName="cpu"
+        )["nodegroup"]
+        if (
+            nodegroup.get("clusterName") != config["cluster_name"]
+            or nodegroup.get("nodegroupName") != "cpu"
+            or nodegroup.get("status") != "ACTIVE"
+        ):
+            raise Refused("Staging CPU verifier node group is not active")
+        autoscaling = nodegroup.get("resources", {}).get("autoScalingGroups", [])
+        names = [item.get("name") for item in autoscaling]
+        if len(names) != 1 or not isinstance(names[0], str):
+            raise Refused("Staging CPU node group has ambiguous backing autoscaling groups")
+        asgs = self.clients["autoscaling"].describe_auto_scaling_groups(
+            AutoScalingGroupNames=names
+        ).get("AutoScalingGroups", [])
+        if len(asgs) != 1 or not asgs[0].get("Instances"):
+            raise Refused("Staging CPU autoscaling group has no live verifier nodes")
+        asg_instances = asgs[0]["Instances"]
+        instance_ids = [item.get("InstanceId") for item in asg_instances]
+        if any(
+            not isinstance(item, str) or member.get("LifecycleState") != "InService"
+            for member, item in zip(asg_instances, instance_ids)
+        ):
+            raise Refused("Staging CPU node group contains an invalid instance")
+        reservations = self.clients["ec2"].describe_instances(InstanceIds=instance_ids).get(
+            "Reservations", []
+        )
+        instances = [instance for reservation in reservations for instance in reservation["Instances"]]
+        if len(instances) != len(instance_ids) or any(
+            instance.get("State", {}).get("Name") != "running"
+            or instance.get("VpcId") != vpc_id
+            for instance in instances
+        ):
+            raise Refused("Staging CPU verifier nodes are not live in the restore VPC")
+        source_ids = sorted(
+            {
+                item["GroupId"]
+                for instance in instances
+                for item in instance.get("SecurityGroups", [])
+                if isinstance(item.get("GroupId"), str)
+            }
+        )
+        if not source_ids:
+            raise Refused("Staging CPU verifier nodes have no security groups")
+        if any(not re.fullmatch(r"sg-[0-9a-f]{8,17}", group_id) for group_id in source_ids):
+            raise Refused("Staging CPU verifier nodes have an invalid security group ID")
+        source_groups = self.clients["ec2"].describe_security_groups(GroupIds=source_ids).get(
+            "SecurityGroups", []
+        )
+        if len(source_groups) != len(source_ids) or any(
+            group.get("VpcId") != vpc_id
+            or group.get("OwnerId") != config["account_id"]
+            or group.get("GroupId") not in source_ids
+            for group in source_groups
+        ):
+            raise Refused("Staging CPU verifier node groups do not match the restore VPC")
+
+        source_databases = self.clients["rds"].describe_db_instances(
+            DBInstanceIdentifier=config["database_identifier"]
+        ).get("DBInstances", [])
+        if len(source_databases) != 1:
+            raise Refused("Staging source database was not uniquely identified")
+        source_db = source_databases[0]
+        source_db_tags = {
+            item["Key"]: item["Value"]
+            for item in self.clients["rds"].list_tags_for_resource(
+                ResourceName=source_db.get("DBInstanceArn", "")
+            ).get("TagList", [])
+        }
+        source_db_sg_ids = [
+            item.get("VpcSecurityGroupId")
+            for item in source_db.get("VpcSecurityGroups", [])
+            if item.get("Status") == "active"
+        ]
+        if (
+            source_db.get("DBInstanceIdentifier") != config["database_identifier"]
+            or source_db.get("DBInstanceArn")
+            != f"arn:aws:rds:{config['region']}:{config['account_id']}:db:{config['database_identifier']}"
+            or source_db.get("DBInstanceStatus") != "available"
+            or source_db.get("PubliclyAccessible") is not False
+            or source_db.get("StorageEncrypted") is not True
+            or source_db.get("DBSubnetGroup", {}).get("VpcId") != vpc_id
+            or not source_db_sg_ids
+            or any(
+                source_db_tags.get(key) != value
+                for key, value in {
+                    "Project": "deepresearch",
+                    "Environment": "staging",
+                    "Session": config["session_id"],
+                }.items()
+            )
+        ):
+            raise Refused("Staging source database identity or private state does not match")
+        source_db_sgs = self.clients["ec2"].describe_security_groups(
+            GroupIds=source_db_sg_ids
+        ).get("SecurityGroups", [])
+        if len(source_db_sgs) != len(source_db_sg_ids) or any(
+            group.get("VpcId") != vpc_id or group.get("OwnerId") != config["account_id"]
+            for group in source_db_sgs
+        ):
+            raise Refused("Staging source database security groups are ambiguous")
+        for instance in instances:
+            node_groups = {item["GroupId"] for item in instance.get("SecurityGroups", [])}
+            if not any(
+                pair.get("GroupId") in node_groups
+                and permission.get("IpProtocol") == "tcp"
+                and permission.get("FromPort") == 5432
+                and permission.get("ToPort") == 5432
+                for group in source_db_sgs
+                for permission in group.get("IpPermissions", [])
+                for pair in permission.get("UserIdGroupPairs", [])
+            ):
+                raise Refused("Staging source database does not admit every verifier node on PostgreSQL")
+
+        rule_ids = []
+        verifier_rule_description = (
+            f"DeepResearch temporary staging restore verifier {config['session_id']}"
+        )
+        try:
+            for source_id in source_ids:
+                self.require_lease()
+                response = self.clients["ec2"].authorize_security_group_ingress(
+                    GroupId=target["GroupId"],
+                    IpPermissions=[
+                        {
+                            "IpProtocol": "tcp",
+                            "FromPort": 5432,
+                            "ToPort": 5432,
+                            "UserIdGroupPairs": [
+                                {"GroupId": source_id, "Description": verifier_rule_description}
+                            ],
+                        }
+                    ],
+                )
+                created = response.get("SecurityGroupRules", [])
+                if len(created) != 1 or not re.fullmatch(
+                    r"sgr-[0-9a-f]{8,17}", created[0].get("SecurityGroupRuleId", "")
+                ):
+                    raise Refused("Temporary restore verifier ingress returned no exact rule ID")
+                rule_ids.append(created[0]["SecurityGroupRuleId"])
+        except Exception:
+            try:
+                # Include rules whose authorize call may have succeeded but whose response was lost.
+                observed = self.clients["ec2"].describe_security_group_rules(
+                    Filters=[{"Name": "group-id", "Values": [target["GroupId"]]}]
+                ).get("SecurityGroupRules", [])
+                rollback_ids = set(rule_ids)
+                rollback_ids.update(
+                    rule["SecurityGroupRuleId"]
+                    for rule in observed
+                    if rule.get("GroupId") == target["GroupId"]
+                    and rule.get("IsEgress") is False
+                    and rule.get("IpProtocol") == "tcp"
+                    and rule.get("FromPort") == 5432
+                    and rule.get("ToPort") == 5432
+                    and rule.get("Description") == verifier_rule_description
+                    and rule.get("ReferencedGroupInfo", {}).get("GroupId") in source_ids
+                    and isinstance(rule.get("SecurityGroupRuleId"), str)
+                )
+                if rollback_ids:
+                    self.clients["ec2"].revoke_security_group_ingress(
+                        GroupId=target["GroupId"], SecurityGroupRuleIds=sorted(rollback_ids)
+                    )
+                remaining = self.clients["ec2"].describe_security_groups(
+                    GroupIds=[target["GroupId"]]
+                ).get("SecurityGroups", [])
+                if len(remaining) != 1 or remaining[0].get("IpPermissions") != []:
+                    raise Refused("Temporary restore verifier ingress remains after rollback")
+            except Exception as cleanup_error:
+                raise Refused(
+                    "Temporary verifier ingress setup failed and rollback could not be verified"
+                ) from cleanup_error
+            raise
+        return {
+            "security_group_id": target["GroupId"],
+            "source_security_group_ids": source_ids,
+            "security_group_rule_ids": rule_ids,
+            "target_database_identifier": plan["target_database_identifier"],
+        }
+
+    def close_restore_verifier_ingress(self, access):
+        """Remove only the recorded temporary verifier rule IDs and verify closure."""
+        if (
+            not isinstance(access, dict)
+            or not re.fullmatch(r"sg-[0-9a-f]{8,17}", access.get("security_group_id", ""))
+            or not access.get("security_group_rule_ids")
+            or any(
+                not re.fullmatch(r"sgr-[0-9a-f]{8,17}", rule_id)
+                for rule_id in access["security_group_rule_ids"]
+            )
+        ):
+            raise Refused("Temporary restore verifier access receipt is malformed")
+        self.clients["ec2"].revoke_security_group_ingress(
+            GroupId=access["security_group_id"],
+            SecurityGroupRuleIds=access["security_group_rule_ids"],
+        )
+        groups = self.clients["ec2"].describe_security_groups(
+            GroupIds=[access["security_group_id"]]
+        ).get("SecurityGroups", [])
+        if len(groups) != 1 or groups[0].get("IpPermissions") != []:
+            raise Refused("Temporary restore verifier ingress remains after cleanup")
 
     def cluster_albs(self):
         result = []

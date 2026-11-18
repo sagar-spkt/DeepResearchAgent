@@ -28,6 +28,7 @@ from lifecycle.core import (
     validate_config,
 )
 from lifecycle.inventory import CLIENTS, InventoryCollector, release_admission, release_plan
+from lifecycle.recovery_job import run_restore_verifier
 
 
 def load(path):
@@ -74,6 +75,7 @@ def main():
             "bootstrap-cleanup",
             "plan-database-restore",
             "database-restore",
+            "verify-database-restore",
             "restore",
             "deploy",
             "promote",
@@ -89,6 +91,10 @@ def main():
     p.add_argument("--config", type=Path)
     p.add_argument("--plan", type=Path)
     p.add_argument("--receipt", type=Path)
+    p.add_argument("--backup-receipt", type=Path)
+    p.add_argument("--user-email")
+    p.add_argument("--conversation-id")
+    p.add_argument("--query")
     p.add_argument("--output", type=Path)
     p.add_argument("--approved-plan-hash")
     p.add_argument("--workspace", type=Path, default=Path.cwd())
@@ -115,6 +121,7 @@ def main():
             "shutdown",
             "bootstrap-cleanup",
             "database-restore",
+            "verify-database-restore",
             "expiry",
             "admit",
             "release",
@@ -131,6 +138,7 @@ def main():
                 "shutdown": "shutdown",
                 "bootstrap-cleanup": "bootstrap-cleanup",
                 "database-restore": "database-restore",
+                "verify-database-restore": "database-restore",
                 "expiry": "expiry",
                 "admit": "admission",
             }.get(args.operation)
@@ -177,16 +185,35 @@ def main():
             elif args.management_cleanup_receipt:
                 raise Refused("--management-cleanup-receipt is only valid for empty-session release")
             restore_receipt = None
-            if args.operation == "database-restore":
+            verification_backup_receipt = None
+            verification_user_email = verification_conversation_id = verification_query = None
+            if args.operation in {"database-restore", "verify-database-restore"}:
                 if not args.receipt:
-                    raise Refused("Database restore requires the reviewed backup --receipt")
+                    raise Refused("Database restore operation requires --receipt")
                 restore_receipt = load(args.receipt)
-                if restore_receipt.get("config") != plan.get("config") or digest(
-                    restore_receipt
-                ) != plan.get("receipt_sha256"):
-                    raise Refused(
-                        "Backup receipt does not match the approved database restore plan"
-                    )
+                if args.operation == "database-restore":
+                    if restore_receipt.get("config") != plan.get("config") or digest(
+                        restore_receipt
+                    ) != plan.get("receipt_sha256"):
+                        raise Refused(
+                            "Backup receipt does not match the approved database restore plan"
+                        )
+                else:
+                    if not all(
+                        [args.backup_receipt, args.user_email, args.conversation_id, args.query]
+                    ):
+                        raise Refused(
+                            "Restore verification requires --backup-receipt, --user-email, --conversation-id and --query"
+                        )
+                    verification_backup_receipt = load(args.backup_receipt)
+                    verification_user_email = args.user_email
+                    verification_conversation_id = args.conversation_id
+                    verification_query = args.query
+                    if (
+                        verification_backup_receipt.get("config") != plan.get("config")
+                        or digest(verification_backup_receipt) != plan.get("receipt_sha256")
+                    ):
+                        raise Refused("Backup receipt does not match the approved restore plan")
             if args.environment and args.environment != plan["config"]["environment"]:
                 raise Refused("Environment argument conflicts with the approved plan")
             reserved = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -237,6 +264,16 @@ def main():
                 elif args.operation == "database-restore":
                     result = execute_database_restore(
                         plan, restore_receipt, args.approved_plan_hash, aws
+                    )
+                elif args.operation == "verify-database-restore":
+                    result = run_restore_verifier(
+                        aws,
+                        plan,
+                        verification_backup_receipt,
+                        restore_receipt,
+                        verification_user_email,
+                        verification_conversation_id,
+                        verification_query,
                     )
                 elif args.operation == "backup":
                     result = backup_execute(plan, args.approved_plan_hash, aws)

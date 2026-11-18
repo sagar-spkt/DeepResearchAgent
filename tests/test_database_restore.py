@@ -124,6 +124,10 @@ class FakeRDS:
             "StorageEncrypted": True,
             "PubliclyAccessible": False,
             "DBSubnetGroup": {"DBSubnetGroupName": self.config["database_identifier"]},
+            "Endpoint": {
+                "Address": f"{target}.abcdefghijkl.us-east-1.rds.amazonaws.com",
+                "Port": 5432,
+            },
             "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-12345678", "Status": "active"}],
         }
         values.update(self.target_overrides)
@@ -247,6 +251,12 @@ class DatabaseRestoreTests(unittest.TestCase):
         )
         self.assertEqual(result["source_database_identifier"], CONFIG["database_identifier"])
         self.assertEqual(result["source_snapshot_arn"], receipt["database_snapshot"]["arn"])
+        self.assertEqual(
+            result["target_database_endpoint"],
+            "deepresearch-staging-restore-session-1.abcdefghijkl.us-east-1.rds.amazonaws.com",
+        )
+        self.assertEqual(5432, result["target_database_port"])
+        self.assertTrue(result["provider_verified"])
         self.assertTrue(result["database_restore_verified"])
         self.assertFalse(result["restore_rehearsed"])
         self.assertFalse(result["application_restore_rehearsed"])
@@ -326,6 +336,16 @@ class DatabaseRestoreTests(unittest.TestCase):
             "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-wrong1234", "Status": "active"}]
         }
         with self.assertRaisesRegex(Refused, "provider state"):
+            execute_database_restore(plan, receipt, digest(plan), adapter)
+
+    def test_restore_receipt_requires_verified_rds_postgres_endpoint(self):
+        receipt = backup_receipt()
+        plan = prepare_database_restore(receipt)
+        adapter = FakeRestoreAdapter(receipt)
+        adapter.rds.target_overrides = {
+            "Endpoint": {"Address": "unexpected.example.com", "Port": 5432}
+        }
+        with self.assertRaisesRegex(Refused, "PostgreSQL RDS endpoint"):
             execute_database_restore(plan, receipt, digest(plan), adapter)
 
     def test_lease_is_rechecked_before_security_group_mutations(self):
