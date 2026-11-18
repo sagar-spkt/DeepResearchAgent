@@ -1,6 +1,5 @@
 """Offline scope checks for the generated expiry executor IAM policy."""
 
-import copy
 import sys
 import unittest
 from pathlib import Path
@@ -10,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lifecycle.core import Refused
 from lifecycle.policies import expiry_executor_policy
-
 from test_backup_policy import CONFIG
 
 

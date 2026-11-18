@@ -4,15 +4,16 @@ import base64
 import hashlib
 import json
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scripts.prepare_expiry_infra import PreparationError, prepare_tfvars, upload_archive
 from test_backup_policy import CONFIG
+
+from scripts.prepare_expiry_infra import PreparationError, prepare_tfvars, upload_archive
 
 
 class PrepareExpiryInfraTests(unittest.TestCase):

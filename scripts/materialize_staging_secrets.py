@@ -7,8 +7,8 @@ import json
 import os
 import re
 import xml.etree.ElementTree as ET
-from urllib.parse import quote
 from pathlib import Path
+from urllib.parse import quote
 
 APP_KEYS = {
     "ALLOWED_ORIGINS",
