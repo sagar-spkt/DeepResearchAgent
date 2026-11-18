@@ -16,7 +16,7 @@ variables {
   runner_image_digest           = "example.invalid/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   runner_repository_arn         = "arn:aws:ecr:us-east-1:123456789012:repository/runner"
   approved_intent_sha256        = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  executor_policy_json          = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+  executor_policy_documents     = ["{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:GetCallerIdentity\",\"Resource\":\"*\"}]}"]
   management_vpc_id             = "vpc-11111111"
   runtime_vpc_id                = "vpc-22222222"
   management_subnet_ids         = ["subnet-11111111"]
@@ -25,7 +25,19 @@ variables {
 }
 
 run "network_permissions_are_scoped" {
-  command = plan
+  command = apply
+  assert {
+    condition = (
+      length(aws_iam_policy.executor_permissions) == length(var.executor_policy_documents) &&
+      length(aws_iam_role_policy_attachment.executor_permissions) == length(var.executor_policy_documents) &&
+      length(aws_iam_policy.executor_permissions) <= 10 &&
+      alltrue([for policy in values(aws_iam_policy.executor_permissions) : length(policy.policy) <= 6144 && length(policy.name) <= 128]) &&
+      length(aws_iam_role_policy.artifact_and_logs.policy) +
+      length(aws_iam_role_policy.describe_cluster.policy) +
+      length(aws_iam_role_policy.executor_network.policy) <= 10240
+    )
+    error_message = "Every executor policy must be attached once and stay below the IAM managed-policy document limit."
+  }
   assert {
     condition = toset(jsondecode(aws_iam_role_policy.executor_network.policy).Statement[1].Resource) == toset([
       "arn:aws:ec2:us-east-1:123456789012:network-interface/*",
@@ -50,6 +62,17 @@ run "network_permissions_are_scoped" {
     )
     error_message = "DeleteNI and permission grants must remain bound to the management network and CodeBuild."
   }
+}
+
+run "reject_too_many_executor_managed_policies" {
+  command = plan
+  variables {
+    executor_policy_documents = [for index in range(11) : jsonencode({
+      Version   = "2012-10-17"
+      Statement = [{ Sid = "p${index}", Effect = "Allow", Action = "sts:GetCallerIdentity", Resource = "*" }]
+    })]
+  }
+  expect_failures = [var.executor_policy_documents]
 }
 
 run "reject_unscoped_subnet" {

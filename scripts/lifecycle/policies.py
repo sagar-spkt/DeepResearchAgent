@@ -1,8 +1,12 @@
 """Pure IAM policy generation for expiry operations; never attaches permissions."""
 
+import json
 import re
 
 from .core import Refused, inspect_destroy, validate_config
+
+MAX_IAM_MANAGED_POLICY_CHARS = 6144
+MAX_IAM_MANAGED_POLICIES_PER_ROLE = 10
 
 
 def backup_policy(config):
@@ -34,8 +38,10 @@ def backup_policy(config):
         statements.append(statement)
 
     allow("RetainedBucketMetadata", ["s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:ListBucketVersions"], buckets)
-    allow("VerifyRetainedVersions", ["s3:GetObjectVersion"], [bucket + "/*" for bucket in buckets])
     prefix = f"arn:aws:s3:::{config['backup_bucket']}/sessions/{environment}/{session}/"
+    allow("VerifyValkeyAndBackupReceipt", ["s3:GetObjectVersion"], [
+        prefix + "valkey/dump.rdb", prefix + "receipts/backup.json",
+    ])
     allow("WriteSessionBackups", ["s3:PutObject"], [
         prefix + "valkey/dump.rdb", prefix + "receipts/backup.json",
     ], {"StringEquals": {"s3:x-amz-server-side-encryption": "AES256"}})
@@ -217,8 +223,39 @@ def _iam_inventory_resources(changes, config):
     return sorted(role_arns), sorted(policy_arns)
 
 
-def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
-    """Compose backup, scoped runtime deletion, and post-shutdown inventory permissions.
+def _split_managed_policy(statements):
+    """Split statements into deterministic IAM managed policy documents under AWS quotas."""
+    documents = []
+    current = []
+    def encoded(rows):
+        return json.dumps(
+            {"Version": "2012-10-17", "Statement": rows},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    for statement in statements:
+        candidate = current + [statement]
+        if len(encoded(candidate)) <= MAX_IAM_MANAGED_POLICY_CHARS:
+            current = candidate
+            continue
+        if not current:
+            raise Refused("A single expiry executor policy statement exceeds the IAM managed-policy size limit")
+        documents.append({"Version": "2012-10-17", "Statement": current})
+        current = [statement]
+        if len(encoded(current)) > MAX_IAM_MANAGED_POLICY_CHARS:
+            raise Refused("A single expiry executor policy statement exceeds the IAM managed-policy size limit")
+    if current:
+        documents.append({"Version": "2012-10-17", "Statement": current})
+    if len(documents) > MAX_IAM_MANAGED_POLICIES_PER_ROLE:
+        raise Refused("Expiry executor policy exceeds the attached managed-policy count limit")
+    if any(len(encoded(document["Statement"])) > MAX_IAM_MANAGED_POLICY_CHARS for document in documents):
+        raise Refused("Expiry executor managed policy exceeds the IAM document-size limit")
+    return documents
+
+
+def expiry_executor_policies(config, runtime_plan, runtime_state_bucket):
+    """Compose bounded policies for the exact runtime plan and backup/shutdown path.
 
     Deletion actions are emitted only for the exact addresses accepted by
     ``inspect_destroy``. Provider reads needed by saved-plan apply and the final
@@ -238,8 +275,7 @@ def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
     if not deletions or not deletions.issubset(changes):
         raise Refused("Expiry IAM policy requires the exact inspected runtime plan")
 
-    policy = backup_policy(config)
-    statements = policy["Statement"]
+    statements = backup_policy(config)["Statement"]
     account, region = config["account_id"], config["region"]
     state_object = f"arn:aws:s3:::{runtime_state_bucket}/deepresearch/{config['environment']}/runtime.tfstate"
 
@@ -330,4 +366,4 @@ def expiry_executor_policy(config, runtime_plan, runtime_state_bucket):
         resources = resource if isinstance(resource, list) else [resource]
         allow("Delete" + str(len(statements)), actions, resources)
 
-    return {"Version": "2012-10-17", "Statement": statements}
+    return _split_managed_policy(statements)

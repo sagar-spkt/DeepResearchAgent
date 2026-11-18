@@ -965,6 +965,15 @@ class InventoryCollector:
                     "expiry-role-arn",
                 )
                 self.record(self.retained, "expiry-iam-role", result["Role"]["Arn"], billed=False)
+        for policy in self.pages(
+            "iam", "list_policies", "Policies", Scope="Local", PathPrefix="/deepresearch/expiry/"
+        ):
+            policy_name = policy.get("PolicyName", "")
+            if not re.fullmatch(re.escape(name) + r"-executor-[a-f0-9]{64}", policy_name):
+                continue
+            expected_arn = f"arn:aws:iam::{self.account}:policy/deepresearch/expiry/{policy_name}"
+            self.require(policy.get("Arn") == expected_arn, "expiry-executor-policy-arn")
+            self.record(self.retained, "expiry-executor-policy", expected_arn, billed=False)
 
 
 def release_plan(

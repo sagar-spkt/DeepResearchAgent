@@ -99,7 +99,7 @@ class PrepareExpiryInfraTests(unittest.TestCase):
         inputs_path = self.write_json("inputs.json", inputs)
         output = self.root / "expiry.auto.tfvars.json"
         with patch("scripts.prepare_expiry_infra.inspect_destroy", return_value=["aws_vpc.main"]), \
-             patch("scripts.prepare_expiry_infra.expiry_executor_policy", return_value={"Version": "2012-10-17", "Statement": []}), \
+             patch("scripts.prepare_expiry_infra.expiry_executor_policies", return_value=[{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:GetCallerIdentity", "Resource": "*"}]}]), \
              patch("scripts.prepare_expiry_infra._verify_archive"):
             result, summary = prepare_tfvars(intent_path, inputs_path, self.archive, output, self.runner,
                                              workspace=self.root)
@@ -107,6 +107,7 @@ class PrepareExpiryInfraTests(unittest.TestCase):
         self.assertEqual(value["expire_at_utc"], "2026-11-17T22:00:00Z")
         self.assertEqual(value["runtime_vpc_id"], "vpc-abcdef01234567890")
         self.assertEqual(value["source_version_id"], self.version)
+        self.assertEqual(len(value["executor_policy_documents"]), 1)
         self.assertEqual(summary["intent_sha256"], approved)
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
 

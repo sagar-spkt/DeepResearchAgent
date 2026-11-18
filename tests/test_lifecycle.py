@@ -671,7 +671,12 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual("arn:snapshot", result["arn"])
 
     def test_changed_backup_object_rejected(self):
-        client = SimpleNamespace(head_object=lambda **kw: {"ETag": "changed", "ContentLength": 3})
+        calls = []
+        class VersionPaginator:
+            def paginate(self, **kwargs):
+                calls.append(kwargs)
+                return [{"Versions": [{"Key": "a", "VersionId": "v1", "ETag": "changed", "Size": 3, "IsLatest": True}]}]
+        client = SimpleNamespace(get_paginator=lambda operation: VersionPaginator())
         with self.assertRaises(Refused):
             AWSAdapter(CONFIG, {"s3": client}).verify_objects(
                 {
@@ -679,6 +684,19 @@ class AdapterTests(unittest.TestCase):
                     "versions": [{"Key": "a", "VersionId": "v1", "ETag": "original", "Size": 3}],
                 }
             )
+        self.assertEqual(calls, [{"Bucket": "research-backups", "Prefix": "a", "ExpectedBucketOwner": CONFIG["account_id"]}])
+
+    def test_backup_object_version_is_revalidated_without_body_read(self):
+        calls = []
+        class VersionPaginator:
+            def paginate(self, **kwargs):
+                calls.append(kwargs)
+                return [{"Versions": [{"Key": "a", "VersionId": "v1", "ETag": "etag-1", "Size": 3, "IsLatest": True}]}]
+        client = SimpleNamespace(get_paginator=lambda operation: VersionPaginator())
+        AWSAdapter(CONFIG, {"s3": client}).verify_objects(
+            {"bucket": "research-backups", "versions": [{"Key": "a", "VersionId": "v1", "ETag": "etag-1", "Size": 3}]}
+        )
+        self.assertEqual(len(calls), 1)
 
 
 class ScopeRegressionTests(unittest.TestCase):

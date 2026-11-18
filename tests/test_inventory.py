@@ -498,6 +498,18 @@ class InventoryTests(unittest.TestCase):
 
     def test_expiry_inventory_accounts_scheduler_dead_letter_alarm(self):
         name = "deepresearch-staging-expiry-session-1"
+        policy_hash = "0" * 64
+        policy_name = name + "-executor-" + policy_hash
+        self.fixtures["pages"][("iam", "list_policies")] = [
+            {
+                "PolicyName": policy_name,
+                "Arn": arn("iam", "policy/deepresearch/expiry/" + policy_name),
+            },
+            {
+                "PolicyName": "another-environment-expiry-session-1-executor-" + policy_hash,
+                "Arn": arn("iam", "policy/deepresearch/expiry/another-environment-expiry-session-1-executor-" + policy_hash),
+            },
+        ]
         expected_names = [name + "-failed", name + "-scheduler-dlq-visible"]
         requested_names = []
         self.fixtures["direct"][("cloudwatch", "describe_alarms")] = lambda kwargs: (
@@ -523,6 +535,15 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(
             {arn("cloudwatch", "alarm:" + alarm_name) for alarm_name in expected_names}, retained
         )
+        expiry_policies = {
+            row["id"] for row in result["retained_resources"] if row["kind"] == "expiry-executor-policy"
+        }
+        self.assertEqual({arn("iam", "policy/deepresearch/expiry/" + policy_name)}, expiry_policies)
+        list_policy_calls = [
+            kwargs for service, operation, kwargs in self.fixtures["calls"]
+            if service == "iam" and operation == "list_policies"
+        ]
+        self.assertIn({"Scope": "Local", "PathPrefix": "/deepresearch/expiry/"}, list_policy_calls)
 
     def test_access_denied_is_not_absence(self):
         for service, operation in (

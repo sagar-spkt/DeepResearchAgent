@@ -69,8 +69,12 @@ class BackupPolicyTests(unittest.TestCase):
         for key in ["document_bucket", "trace_bucket", "backup_bucket"]:
             bucket = "arn:aws:s3:::" + CONFIG[key]
             self.assertTrue(permits(self.policy, "s3:ListBucketVersions", bucket))
-            self.assertTrue(permits(self.policy, "s3:GetObjectVersion", bucket + "/some/object"))
+            self.assertFalse(permits(self.policy, "s3:GetObjectVersion", bucket + "/some/object"))
             self.assertFalse(permits(self.policy, "s3:GetObjectVersion", bucket.replace("staging", "production") + "/some/object"))
+        exact = "arn:aws:s3:::" + CONFIG["backup_bucket"] + "/sessions/staging/session-1/"
+        self.assertTrue(permits(self.policy, "s3:GetObjectVersion", exact + "valkey/dump.rdb"))
+        self.assertTrue(permits(self.policy, "s3:GetObjectVersion", exact + "receipts/backup.json"))
+        self.assertFalse(permits(self.policy, "s3:GetObjectVersion", exact + "clickhouse/data.bin"))
 
     def test_lock_mutation_never_changes_admission_or_month_reservations(self):
         table = "arn:aws:dynamodb:us-east-1:123456789012:table/deepresearch-control"

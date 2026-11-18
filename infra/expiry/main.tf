@@ -41,9 +41,21 @@ variable "approved_intent_sha256" {
     error_message = "An explicitly reviewed expiry intent hash is required."
   }
 }
-variable "executor_policy_json" {
-  type        = string
-  description = "Reviewed environment/resource-scoped AWS actions for the exact runtime plan, backups and read-only verification. No default broad policy."
+variable "executor_policy_documents" {
+  type        = list(string)
+  description = "Reviewed environment/resource-scoped AWS managed policy documents for the exact runtime plan, backup and verification."
+  validation {
+    condition = (
+      length(var.executor_policy_documents) > 0 &&
+      length(var.executor_policy_documents) <= 10 &&
+      length(toset(var.executor_policy_documents)) == length(var.executor_policy_documents) &&
+      alltrue([for document in var.executor_policy_documents :
+        length(document) <= 6144 && can(jsondecode(document)) &&
+        try(jsondecode(document).Version == "2012-10-17" && length(jsondecode(document).Statement) > 0, false)
+      ])
+    )
+    error_message = "Supply 1-10 distinct valid IAM policy documents, each at most 6,144 characters."
+  }
 }
 variable "management_vpc_id" { type = string }
 variable "runtime_vpc_id" { type = string }
@@ -61,9 +73,28 @@ resource "aws_iam_role" "executor" {
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "codebuild.amazonaws.com" }, Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }, ArnEquals = { "aws:SourceArn" = "arn:aws:codebuild:${var.region}:${data.aws_caller_identity.current.account_id}:project/${local.name}" } } }] })
   lifecycle { prevent_destroy = true }
 }
-resource "aws_iam_role_policy" "executor" {
-  role   = aws_iam_role.executor.id
-  policy = var.executor_policy_json
+locals {
+  executor_policy_documents = {
+    for document in var.executor_policy_documents : sha256(document) => document
+  }
+}
+resource "aws_iam_policy" "executor_permissions" {
+  for_each    = local.executor_policy_documents
+  name        = "${local.name}-executor-${each.key}"
+  path        = "/deepresearch/expiry/"
+  description = "Session-scoped expiry executor permissions (${var.environment}/${var.session_id})"
+  policy      = each.value
+  tags = {
+    Project     = "deepresearch"
+    Environment = var.environment
+    Session     = var.session_id
+    Component   = "expiry-executor-policy"
+  }
+}
+resource "aws_iam_role_policy_attachment" "executor_permissions" {
+  for_each   = aws_iam_policy.executor_permissions
+  role       = aws_iam_role.executor.name
+  policy_arn = each.value.arn
 }
 resource "aws_iam_role_policy" "artifact_and_logs" {
   role = aws_iam_role.executor.id
@@ -76,7 +107,7 @@ resource "aws_iam_role_policy" "artifact_and_logs" {
   ] })
 }
 resource "aws_codebuild_project" "executor" {
-  depends_on     = [aws_iam_role_policy.executor_network]
+  depends_on     = [aws_iam_role_policy.executor_network, aws_iam_role_policy_attachment.executor_permissions]
   name           = local.name
   service_role   = aws_iam_role.executor.arn
   build_timeout  = 90

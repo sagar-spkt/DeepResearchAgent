@@ -315,13 +315,14 @@ class AWSAdapter:
 
     def verify_objects(self, inventory):
         for entry in inventory["versions"]:
-            head = self.clients["s3"].head_object(
-                ExpectedBucketOwner=self.config["account_id"],
-                Bucket=inventory["bucket"],
-                Key=entry["Key"],
-                VersionId=entry["VersionId"],
-            )
-            if head.get("ETag") != entry["ETag"] or head.get("ContentLength") != entry["Size"]:
+            if not isinstance(entry.get("Key"), str) or not entry.get("VersionId") or entry["VersionId"] == "null":
+                raise Refused("Retained object receipt is missing an exact version identity")
+            current = self.versions(inventory["bucket"], prefix=entry["Key"])
+            exact = [
+                candidate for candidate in current["versions"]
+                if candidate["Key"] == entry["Key"] and candidate["VersionId"] == entry["VersionId"]
+            ]
+            if len(exact) != 1 or exact[0].get("ETag") != entry.get("ETag") or exact[0].get("Size") != entry.get("Size"):
                 raise Refused("Versioned backup object differs from receipt")
 
     def verify_receipt(

@@ -20,7 +20,7 @@ from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 from scripts.lifecycle.core import Refused, command, inspect_destroy, validate_config
-from scripts.lifecycle.policies import expiry_executor_policy
+from scripts.lifecycle.policies import expiry_executor_policies
 from scripts.package_expiry_archive import _runtime_source_files
 
 
@@ -241,7 +241,7 @@ def prepare_tfvars(intent_path: Path, inputs_path: Path,
         rf"arn:aws:kms:{re.escape(region)}:{account}:key/[a-f0-9-]{{36}}", source_key_arn
     ):
         raise PreparationError("Expiry source KMS key must belong to the approved account and region")
-    policy = expiry_executor_policy(config, runtime_plan, inputs["runtime_state_bucket"])
+    policies = expiry_executor_policies(config, runtime_plan, inputs["runtime_state_bucket"])
     not_before = datetime.fromisoformat(intent["not_before"].replace("Z", "+00:00"))
     if not_before.tzinfo is None:
         raise PreparationError("Expiry trigger must include an explicit timezone")
@@ -260,7 +260,10 @@ def prepare_tfvars(intent_path: Path, inputs_path: Path,
         "runner_image_digest": image,
         "runner_repository_arn": repository_arn,
         "approved_intent_sha256": approved_hash,
-        "executor_policy_json": json.dumps(policy, sort_keys=True, separators=(",", ":")),
+        "executor_policy_documents": [
+            json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            for policy in policies
+        ],
         "management_vpc_id": inputs["management_vpc_id"],
         "runtime_vpc_id": runtime_vpc_id,
         "management_subnet_ids": inputs["management_subnet_ids"],
