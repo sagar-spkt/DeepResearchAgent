@@ -24,10 +24,14 @@ spec:
           envFrom: [{ secretRef: { name: {{ .Values.applicationSecret }} } }]
           env:
             - { name: ENVIRONMENT, value: {{ .Values.environment | quote }} }
-            - { name: MODEL_PROVIDER, value: vllm }
+            - { name: MODEL_PROVIDER, value: {{ .Values.model.provider | quote }} }
+            {{- if eq .Values.model.provider "vllm" }}
+            - { name: VLLM_BASE_URL, value: "http://research-vllm:8000/v1" }
+            {{- else }}
+            - { name: BEDROCK_MODEL_ID, value: {{ .Values.model.bedrockModelId | quote }} }
+            {{- end }}
             - { name: STORAGE_BACKEND, value: s3 }
             - { name: EMBEDDING_PROVIDER, value: sentence-transformers }
-            - { name: VLLM_BASE_URL, value: "http://research-vllm:8000/v1" }
           resources:
             requests: { cpu: "250m", memory: "512Mi" }
             limits: { cpu: "1000m", memory: "1Gi" }

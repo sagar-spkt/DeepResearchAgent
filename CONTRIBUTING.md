@@ -31,8 +31,8 @@ The checker validates repository-specific metadata contracts, generated adapter 
 | Next.js UI | Node behavior/module checks and npm lock are present; production build succeeds. Selected Chrome flows for local session, history, upload, report, attachment, memory CRUD, admin trace view, local non-admin denial, and native Langfuse tracing were exercised. Active-run reconnect, cancellation, upload-during-run, Cognito and admin-revocation acceptance remain outstanding. Current source is JavaScript. |
 | Database/documents | SQLite regressions and local PostgreSQL/pgvector migration, checkpoint recovery, upload indexing, and real CPU BGE inference were exercised. Broader concurrency/capacity and production RDS acceptance remain outstanding. |
 | Deep Agents/models | Real SDK offline execution, 100-turn compaction and 20 synthetic cases run. Live Bedrock/vLLM evaluations remain outstanding. |
-| Terraform/Helm | Cross-platform provider locks are present and all four Terraform roots validate with backend disabled; Helm lint/render and Compose checks run with synthetic release values. Intended EKS/controller compatibility, real artifact digests and cloud integration remain outstanding. |
-| Deployment/lifecycle | Preparation workflows remain deployment-blocked. Require live expiry, staging smoke, backup/restore and teardown inventory evidence before promotion. |
+| Terraform/Helm | `infra/ci` and `infra/aws` have cross-platform provider locks and validate with backend disabled; Helm lint/render and Compose checks run with synthetic release values. |
+| Deployment | Manual `Deploy` (staging, then optionally production) and `Destroy` workflows; see `infra/README.md`. Staging smoke tests (API readiness, Bedrock call, Langfuse health, public HTTPS) gate production. |
 
 See docs/local-development.md for executable commands. Update this matrix, CI and agent instructions when checks are added; never call outstanding checks passing. Default CI must not need cloud credentials or paid APIs. Fork PRs never receive secrets.
 

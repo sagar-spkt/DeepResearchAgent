@@ -1,35 +1,53 @@
-# AWS deployment foundation
+# AWS environments
 
-These configurations are reviewable infrastructure source, not a verified deployed application environment. The repository GitHub OIDC trust roles exist in AWS and are managed by the separate `github-oidc` root in shared versioned state. No application, staging, or production environment has been provisioned.
+Staging and production are each one disposable Terraform root (`infra/aws`)
+plus three Helm releases, created and torn down only by GitHub Actions. See
+[ADR-0012](../docs/decisions/0012-simple-github-actions-environments.md).
 
-## State and order
+| Path | Purpose |
+| --- | --- |
+| `infra/ci` | One-time bootstrap: GitHub OIDC deploy roles `deepresearch-<env>-deploy`. |
+| `infra/aws` | Everything for one environment: VPC, EKS, RDS, S3, SQS, ECR, Cognito, ACM, IAM, generated credentials. |
+| `infra/aws/env/<env>.tfvars` | Per-environment hostname and settings. |
+| `scripts/deploy.sh` | Terraform apply, image build/push, Helm installs, DNS, smoke tests. |
+| `scripts/destroy.sh` | Removes Helm releases (ALB, EBS volumes), DNS record, then `terraform destroy`. |
 
-Bootstrap an encrypted versioned S3 Terraform-state bucket separately. Supply per-environment backend configuration using the examples. Foundation contains retained documents/backups/traces buckets, identity, secret containers, image repositories, queues, and an environment-scoped SNS alert topic encrypted by a dedicated customer-managed KMS key. Its output includes `alert_topic_arn` and `alert_kms_key_arn`; pass the topic ARN to the expiry stack. The SNS topic and KMS key policies allow only this environment's expiry CloudWatch alarms to publish/use the key, while preserving account-owner topic/key management. The email or other endpoint subscription must be added and confirmed separately after apply; no recipient address is stored in Terraform. Runtime creates the VPC, EKS, node groups and private RDS. Feed the foundation output into runtime variables explicitly. Never share state keys across environments.
+State lives in the existing versioned bucket `ra-088759500358-terraform-state`
+under `deepresearch/<env>/aws.tfstate`. Generated passwords exist only in that
+encrypted state and in Kubernetes Secrets.
 
-Initialize each layer with `terraform init -backend-config=...`, then `terraform plan -out=...`; inspect the exact saved plan before apply. Use the shared `infra/environments/shared/github-oidc.backend.hcl.example` key for repository OIDC roles, separate from per-environment runtime state. Provider locks for all six root modules pin AWS provider 6.20.0 and include Linux amd64/arm64 and macOS amd64/arm64 checksums. Backend-disabled validation passed for the original five roots; the management root also passed cached provider validation and five mocked plan tests. Provider binaries/checksums are not vendored here.
+## One-time setup
 
-The separate `infra/management` root supplies a disposable private executor subnet, NAT gateway/address, and S3 gateway endpoint outside runtime. The initial connection design allowlists its NAT public address as a `/32` on the existing public EKS API; peering is unnecessary for the executor's current API-only path. Input wiring and live connectivity are unverified. Provision it only as part of a reviewed session plan; after runtime teardown an external finalizer must remove the NAT/address and management network. See [management networking](../docs/management-network.md) and [ADR-0010](../docs/decisions/0010-session-management-network.md). The external finalizer is still unimplemented.
+1. Apply the CI bootstrap as an AWS administrator:
 
-## Deliberate deployment prerequisites
+   ```sh
+   terraform -chdir=infra/ci init -backend-config="bucket=ra-088759500358-terraform-state"
+   terraform -chdir=infra/ci apply
+   ```
 
-Set region/AZs, operator CIDR ranges, Kubernetes version in standard support, a same-account `operator_principal_arn`, unique session ID, callback URLs/domain, and foundation outputs. Terraform creates a dedicated one-hour EKS administrator role trusted by that operator principal; EKS access entries bind to the role, never directly to the long-lived user. The operator must be able to call `sts:AssumeRole` for the generated role and `eks:DescribeCluster` for `aws eks update-kubeconfig`; neither permission has been tested in this session. The current target is Kubernetes 1.37 as of 2026-11-14; Terraform disables self-managed networking add-ons and pins EKS-managed VPC CNI, kube-proxy, CoreDNS, Pod Identity Agent and EBS CSI versions checked for 1.37 in `us-east-1`. The cluster sets support type to `STANDARD`, which avoids extended-support billing by allowing AWS to auto-upgrade the control plane at the end of standard support. Revalidate the target and add-on compatibility before each apply. Do not pass 0.0.0.0/0 as EKS administrator access. Use a self-hosted ephemeral GitHub runner within the approved network or add a narrowly scoped runner egress CIDR per deployment. GPU capacity/quota and the opposite environment's shutdown must be verified first.
+   Each role trusts only `repo:sagar-spkt/DeepResearchAgent:environment:<env>`
+   and has `AdministratorAccess`, because Terraform creates and deletes IAM
+   roles, EKS, RDS and networking.
+2. In the GitHub `staging` and `production` environments set variable
+   `BOOTSTRAP_OWNER_EMAIL` (the first owner account) and, for web search,
+   secret `TAVILY_API_KEY`. Keep both environments restricted to `main`.
 
-Create application database credentials and vLLM key in Secrets Manager. Bootstrap separate database roles/databases with database/bootstrap.sql from an in-VPC job. Run backend migrations before opening ingress. App SQL cannot use the RDS master identity. RDS extension availability must be verified on the selected engine version.
+## Operations
 
-For a closed, no-model recovery rehearsal, set runtime variable `gpu_desired_size = 0`; this leaves the GPU node group at zero desired nodes while preserving the default of one GPU node for public vLLM staging. The variable accepts only zero or one. This reduces the closed rehearsal's hourly compute cost and avoids consuming the four-vCPU G/VT quota, but does not remove the GPU node group or its supporting subnet resources.
+- **Deploy**: run the *Deploy* workflow on `main`. `staging` provisions or
+  updates staging and runs smoke tests. `staging-then-production` does the same
+  and then deploys production only if staging succeeded in that run.
+- **Destroy**: run the *Destroy* workflow, choose the environment and type its
+  name again. All of its data is deleted; nothing is retained.
+- **Debug**: users listed in `admin_principal_arns` can run
+  `aws eks update-kubeconfig --name deepresearch-<env>`. Langfuse has no public
+  route: `kubectl -n research port-forward svc/langfuse 3000:3000`. The Langfuse
+  admin password is `LANGFUSE_INIT_USER_PASSWORD` in the
+  `research-observability` Secret.
 
-Install a pinned NVIDIA device-plugin chart, AWS Load Balancer Controller with reviewed least-privilege IAM, and DNS/certificate resources before enabling ingress or persistent observability. ALB/NVIDIA controller installations are operator prerequisites; Terraform defines the EBS CSI add-on with Pod Identity. no cluster-admin credentials or wildcard controller policy is fabricated here. ALB and certificates are intentionally not created by Terraform because ingress reconciliation owns the ALB.
+## Cost
 
-Pod Identity grants application service account access only to the environment's documents, research queue and secret containers. Terraform defines a separate observability role scoped to the traces bucket and service account research-observability. It must not inherit the application service account.
-
-## Retention and lifecycle
-
-Retained resources have prevent_destroy. RDS has deletion protection and mandatory final snapshots: ordinary terraform destroy will fail until a reviewed lifecycle procedure verifies durable database, ClickHouse and identity backups, drains work and intentionally changes protection. This is deliberate fail-closed behavior, not an automatic shutdown implementation.
-
-A complete four-hour AWS-side expiry controller, backup/restore implementation, safe draining, cost admission and teardown inventory are prerequisites for staging. Establish live recovery evidence in the first closed staging rehearsal with synthetic data and a reviewed provisioning-failure cleanup path; see [ADR-0009](../docs/decisions/0009-first-staging-recovery-rehearsal.md). Successful recovery is required before public ingress opens. The lifecycle deployment command currently refuses to provision because the operational prerequisites are incomplete. Foundation purge must explicitly inventory versions, secrets, ECR, SNS topics, KMS keys and Cognito; it cannot be achieved by a generic destroy command. The alert topic and key have `prevent_destroy` and must be included in retained-resource inventory and explicit purge handling.
-
-The expiry source ZIP can be prepared with [the archive packager](../docs/expiry-source-archive.md), but it still must be uploaded to a versioned, KMS-encrypted object and paired with the exact reviewed CodeBuild image, destroy/backup IAM policy, runtime and management network, and Kubernetes RBAC before the schedule is applied.
-
-## Limits
-
-One CPU node/single-AZ database is not HA. CPU capacity must be measured with Langfuse dependencies. EKS/controller compatibility, deployment, model compatibility, load/cost testing and backup restoration remain unverified. No $200 spending guarantee is implied.
+While an environment exists it runs one EKS control plane, one `m6i.xlarge`
+node, one `db.t4g.small` RDS instance and one ALB (roughly $0.35/hour in
+`us-east-1`, before data transfer and Bedrock usage). Destroy environments you
+are not using.

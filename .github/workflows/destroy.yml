@@ -1,0 +1,70 @@
+{
+  "name": "Destroy",
+  "run-name": "Destroy ${{ inputs.environment }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "environment": {
+          "type": "choice",
+          "options": [
+            "staging",
+            "production"
+          ],
+          "required": true
+        },
+        "confirm": {
+          "description": "Type the environment name again to confirm. ALL data in it is deleted.",
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "aws-environments",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "AWS_REGION": "us-east-1",
+    "TF_STATE_BUCKET": "ra-088759500358-terraform-state"
+  },
+  "jobs": {
+    "destroy": {
+      "name": "Destroy ${{ inputs.environment }}",
+      "if": "inputs.confirm == inputs.environment",
+      "runs-on": "ubuntu-24.04",
+      "environment": {
+        "name": "${{ inputs.environment }}"
+      },
+      "timeout-minutes": 90,
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "./.github/actions/setup-aws",
+          "with": {
+            "environment": "${{ inputs.environment }}"
+          }
+        },
+        {
+          "name": "Tear down the environment",
+          "env": {
+            "TARGET_ENVIRONMENT": "${{ inputs.environment }}"
+          },
+          "run": "scripts/destroy.sh \"$TARGET_ENVIRONMENT\""
+        }
+      ]
+    }
+  }
+}

@@ -44,6 +44,20 @@
           "type": "string"
         }
       }
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "bedrock",
+            "vllm"
+          ]
+        },
+        "bedrockModelId": {
+          "type": "string"
+        }
+      }
     }
   },
   "allOf": [

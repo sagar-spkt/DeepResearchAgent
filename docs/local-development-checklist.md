@@ -32,7 +32,7 @@ This checklist tracks the developer workstation setup separately from AWS releas
 
 ## Local completion criteria
 
-Core local setup and the optional Langfuse profile have been exercised. Memory CRUD, local non-admin denial, active-run reconnect/cancellation, and mid-run upload/index/retrieval are covered by browser checks. The lifecycle harness used the real document worker and BGE retrieval code but intentionally bypassed model generation; it does not establish the real agent's tool-call choice. Remaining local work is the budgeted research quality/cost evaluation and any unverified application failure paths tracked in `docs/remaining-work-plan.md`. Cognito, AWS restore/promotion/purge, and deployment remain separate release gates.
+Core local setup and the optional Langfuse profile have been exercised. Memory CRUD, local non-admin denial, active-run reconnect/cancellation, and mid-run upload/index/retrieval are covered by browser checks. The lifecycle harness used the real document worker and BGE retrieval code but intentionally bypassed model generation; it does not establish the real agent's tool-call choice. Remaining local work is the budgeted research quality/cost evaluation and any unverified application failure paths tracked in the project history (the remaining-work plan was retired by ADR-0012). Cognito, AWS restore/promotion/purge, and deployment remain separate release gates.
 
 ## Optional local observability
 

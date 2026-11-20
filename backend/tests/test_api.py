@@ -209,6 +209,22 @@ def test_cloud_refuses_local_defaults():
         Settings(model_provider="bedrock")
 
 
+def test_cloud_accepts_bedrock_and_rejects_fake_models():
+    cloud = dict(
+        environment="staging",
+        database_url="postgresql+psycopg://u:p@db/research",
+        cognito_issuer="https://cognito-idp.us-east-1.amazonaws.com/pool",
+        cognito_client_id="client",
+        storage_backend="s3",
+        s3_bucket="documents",
+        embedding_model="/opt/models/bge",
+    )
+    settings = Settings(model_provider="bedrock", bedrock_model_id="amazon.nova-lite-v1:0", **cloud)
+    assert settings.model_provider == "bedrock"
+    with pytest.raises(ValueError):
+        Settings(model_provider="fake", **cloud)
+
+
 def test_parsers_reject_unsupported_or_binary_text():
     with pytest.raises(DocumentError):
         parse_document("a.txt", b"\xff")

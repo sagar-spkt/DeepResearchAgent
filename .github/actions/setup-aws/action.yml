@@ -1,0 +1,47 @@
+{
+  "name": "Set up AWS deployment tools",
+  "description": "Install pinned Terraform, Helm and kubectl and assume the environment's GitHub OIDC deploy role.",
+  "inputs": {
+    "environment": {
+      "description": "staging or production",
+      "required": true
+    }
+  },
+  "runs": {
+    "using": "composite",
+    "steps": [
+      {
+        "name": "Install pinned Terraform",
+        "uses": "hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e",
+        "with": {
+          "terraform_version": "1.17.1",
+          "terraform_wrapper": false
+        }
+      },
+      {
+        "name": "Install pinned Helm",
+        "uses": "azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4",
+        "with": {
+          "version": "v3.22.1"
+        }
+      },
+      {
+        "name": "Install pinned kubectl",
+        "uses": "Azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f",
+        "with": {
+          "version": "v1.37.1"
+        }
+      },
+      {
+        "name": "Assume the environment deploy role",
+        "uses": "aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df",
+        "with": {
+          "role-to-assume": "arn:aws:iam::088759500358:role/deepresearch-${{ inputs.environment }}-deploy",
+          "role-session-name": "${{ inputs.environment }}-${{ github.run_id }}",
+          "aws-region": "us-east-1",
+          "role-duration-seconds": "7200"
+        }
+      }
+    ]
+  }
+}

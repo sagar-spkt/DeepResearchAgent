@@ -1,21 +1,14 @@
-# AWS lifecycle workflows
+# Workflows
 
-Application, infrastructure, and repository checks run on direct pushes to every branch, pull requests, and manual dispatch. This lets a direct-to-main workflow use check results from the exact commit without requiring a pull request. The main ruleset continues to require all seven CI contexts.
+- **Repository / Application / Infrastructure checks** run on every push and
+  pull request. The `main` ruleset requires them.
+- **Deploy** (manual, `main` only): `staging` provisions or updates staging with
+  Terraform, builds and pushes images, installs the Helm charts, points DNS at
+  the ALB and runs smoke tests. `staging-then-production` then repeats this for
+  production, only if the staging job succeeded in the same run.
+- **Destroy** (manual): deletes one environment and all of its data. Type the
+  environment name in `confirm`.
 
-The staging `Deploy` workflow is a gated application installer: it builds/publishes images and applies Helm/DNS to an existing EKS cluster from a private self-hosted runner. The manual `Provision staging infrastructure` workflow plans and applies the separate management/runtime Terraform roots with tagged, least-privilege OIDC roles and stores saved plans in the private versioned state bucket. Its management runner modes are `disabled`, `prepare` (create only the session token KMS key), and `launch` (launch the one-job private runner after its short-lived token is staged as an encrypted SSM parameter). Use `scripts/stage_staging_runner_token.py` between the prepare and launch applies; the token is never a workflow input or Terraform variable. This provisioning workflow does not install expiry or establish recovery acceptance. The backup/shutdown and restore workflows remain preparation-only and fail closed before creating AWS clients. The staging deployment OIDC role has app-scoped permissions plus a separate exact-key lifecycle-lease policy; the production OIDC role has no AWS permissions.
-
-`Publish staging expiry runner image` is a separate image-only workflow. It waits for the seven required checks on the exact commit, then uses a dedicated staging-environment OIDC role that can push only to the expiry-runner ECR repository. It supports main-branch changes and confirmed manual dispatch, and records the immutable image digest with build provenance and an SBOM. Provision the repository and publisher role first. This workflow does not package or upload the private source archive, install expiry Terraform, or enable application-writer authorization.
-
-`Finalize empty staging session` is a separate GitHub-hosted, manual workflow for an admission that never started application writers. It requires an absent deployment marker and absent EKS/RDS runtime, requires the dispatching administrator to verify runner unregistration, and applies only an exact reviewed delete plan for that session's management network and runner resources. It writes a private cleanup receipt and lifecycle config for the subsequent fresh inventory and admission release. It cannot replace backup/shutdown for a session that may have hosted writers.
-
-## Solo production release authorization
-
-This portfolio project uses CI plus deliberate owner-started workflows instead of a second GitHub account or independent reviewer. The `Deploy` workflow is restricted to staging and requires `I AUTHORIZE STAGING DEPLOYMENT`. The `Promote` workflow is restricted to production and requires `I AUTHORIZE PRODUCTION PROMOTION`. Backup/shutdown, restore, and purge workflows require distinct confirmation phrases for the selected environment; purge is a separate authorization. Each run records the workflow actor, commit, and outcome; the job log records when confirmation matched. These are auditable self-authorization steps, not independent code review or a substitute for required CI checks.
-
-The Deploy workflow's confirmation input is only one gate. Manual dispatch also requires the exact active staging session ID. Public deployment requires current recovery acceptance and a verified in-VPC runner; closed rehearsal requires its separate confirmation and all pre-writer readiness controls. Those GitHub variables must remain false until independently verified. The current workflow run can succeed while the deployment job is skipped; that is not a staging deployment. A separate reviewed infrastructure workflow and provisioning role are still needed. Production promotion remains blocked until staging acceptance, backup/restore and shutdown evidence, artifact provenance, least-privilege OIDC policies, rollback checks, and release authorization are complete.
-
-Staging and production environments are restricted to protected branches, and the `main` ruleset requires the configured CI checks. No environment reviewer is configured. Never use `pull_request_target` to execute untrusted code or expose cloud credentials to fork pull requests.
-
-All AWS lifecycle mutations must share the global concurrency group and an AWS-side lease that also excludes console or external changes. Build images once, publish immutable digests with provenance, and promote the same tested digests. Validate release manifests; schema checks are not provenance verification. Infrastructure plans can contain secrets and must not be public artifacts or logs.
-
-Implement AWS-side four-hour expiry before permitting deployment, including backup, drain, failure notification, and billed-resource inventory. Read `infra/README.md` for retained/runtime ownership and restoration blockers. Purge requires its own explicit confirmation, verified backup, exact environment inventory, and ordered state disposition; never interpolate an environment input into a shell command.
+Deploy and Destroy share one concurrency group and assume
+`deepresearch-<env>-deploy` through GitHub OIDC; the role trusts only the
+matching GitHub environment. See `infra/README.md`.

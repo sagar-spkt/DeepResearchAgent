@@ -1,6 +1,6 @@
 # Project specification
 
-Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, BGE CPU embeddings, PostgreSQL/checkpoint restart recovery, core browser upload/history/report flows, and low-load local Langfuse ingestion/admin metadata have been exercised with synthetic data. Broad model quality/cost, full browser flows, Cognito, the native-console authorization gateway, and cloud lifecycle remain unverified. See `docs/remaining-work-plan.md` for the current task queue and gates. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
+Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, BGE CPU embeddings, PostgreSQL/checkpoint restart recovery, core browser upload/history/report flows, and low-load local Langfuse ingestion/admin metadata have been exercised with synthetic data. Broad model quality/cost, full browser flows, Cognito, the native-console authorization gateway, and cloud lifecycle remain unverified. AWS deployment is described in `infra/README.md` and ADR-0012, which supersedes the lifecycle, vLLM-in-AWS and data-retention decisions below. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
 
 ## Product requirements
 
