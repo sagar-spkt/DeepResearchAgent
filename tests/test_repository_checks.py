@@ -168,9 +168,9 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertIn("grep -Eiv '^[[:space:]]*proxy_set_header (Upgrade|Connection)", command)
         self.assertIn("must not forward WebSocket upgrade headers.", command)
         self.assertIn("research-console.yaml", command)
-        self.assertIn("nginx_image=ghcr.io/nginx/nginx-unprivileged:1.30.6-alpine3.24@sha256:", command)
+        self.assertIn("nginx_image=ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine3.24@sha256:", command)
         self.assertIn(
-            "sha256:6b0610b60dff09248d642643a29393543a92eb355b00bbd1d12c7af562ef94c4",
+            "sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd",
             command,
         )
         self.assertIn("nginx_config=\"$RUNNER_TEMP/research-console.conf\"", command)
