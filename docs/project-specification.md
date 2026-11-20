@@ -1,6 +1,8 @@
 # Project specification
 
-Status: agreed v1 direction; initial local implementation and platform source exist. Local Bedrock/Tavily research, BGE CPU embeddings, PostgreSQL/checkpoint restart recovery, core browser upload/history/report flows, and low-load local Langfuse ingestion/admin metadata have been exercised with synthetic data. Broad model quality/cost, full browser flows, Cognito, the native-console authorization gateway, and cloud lifecycle remain unverified. AWS deployment is described in `infra/README.md` and ADR-0012, which supersedes the lifecycle, vLLM-in-AWS and data-retention decisions below. This document records the conversation decisions. Changes to requirements need explicit agreement; measured defaults can be refined with evidence and an ADR.
+Status: v1 is implemented and deployed to AWS staging through GitHub Actions.
+Changes to requirements need explicit agreement; record consequential changes in
+an ADR (see `docs/decisions/`).
 
 ## Product requirements
 
@@ -18,40 +20,41 @@ Use Tavily free credits through a replaceable adapter. Do not enable paid upgrad
 
 ## Model service
 
-AWS staging/production use private, separately deployed vLLM with an OpenAI-compatible /v1 API, rotatable service keys in Secrets Manager, and network restrictions. App users receive no inference service key. Administrator testing uses an authenticated tunnel. Do not rely on vLLM API-key authentication to secure every server endpoint.
-
-Local real-model tests use Bedrock through ChatBedrockConverse with an explicitly configured accessible model ID and local AWS profile credentials. Fake providers support offline tests. The swappable model factory supports vllm, bedrock and fake; no silent paid fallback.
-
-Qwen3-8B BF16 is the baseline, not a proven best model. Compare Qwen3-14B, Qwen3.5-9B and gpt-oss-20b on the actual GPU before release selection; validate parser/template/quantization compatibility. Pin the winning model revision and serving image. Initial context cap is 16K; validate continuous batching, chunked prefill and supported prefix caching with per-user cache isolation. Qwen3.5 hybrid caching requires extra validation.
+Staging, production and local real-model runs use Amazon Bedrock (Nova Lite)
+through `ChatBedrockConverse` with an explicitly configured model ID; fake
+providers are for offline tests only and there is no silent paid fallback. The
+model factory also supports an OpenAI-compatible vLLM endpoint for future
+self-hosting (ADR-0012).
 
 ## AWS architecture and environments
 
-Region us-east-1. Local Docker Compose; separate Terraform state, credentials, identity pools, buckets and backups for staging and production in one AWS account. AWS environments run sequentially; do not assume a quota increase.
-
-Docker/ECR images by digest; EKS/Helm; initial CPU node m6i.2xlarge and dedicated tainted g6e.xlarge GPU node. Current G/VT quota is four vCPUs, allowing one four-vCPU GPU instance at a time in the region. The current EKS baseline target is Kubernetes 1.37 with standard support only (as of 2026-11-14); verify regional availability, add-on compatibility and capacity before deployment. Validate CPU resource sizing and account quotas.
-
-Two-AZ VPC. Budget-focused nodes have public-subnet outbound internet but no unsolicited inbound access; RDS is private. Restrict Kubernetes API access. ALB with ACM/Route 53 exposes the application only; inference, data services and Langfuse remain private. An owned domain is a deployment prerequisite.
-
-Single-AZ RDS PostgreSQL/pgvector, separate application and Langfuse databases/users; S3 private encrypted files/backups; SQS plus dead-letter queue; Cognito; Secrets Manager; least-privilege workload IAM; CloudWatch with short retention. Do not imply high availability with a single node/database instance.
+Region us-east-1. Staging and production are separate, disposable environments,
+each one Terraform root (`infra/aws`) with its own state, Cognito pool, buckets
+and database. One two-AZ VPC; a single EKS CPU node in public subnets (no NAT);
+private single-AZ RDS PostgreSQL/pgvector with separate application and Langfuse
+databases/users; private S3 for documents and Langfuse events; SQS with a
+dead-letter queue; Pod Identity roles per workload. An ALB with ACM/Route 53
+exposes only the web app; the API, Langfuse and data services stay private.
+Nothing here is highly available.
 
 ## Observability and evaluation
 
 Self-host Langfuse with its required PostgreSQL, ClickHouse, Valkey and S3 dependencies. Trace via LangChain callbacks, correlating environment/release/conversation/run. Record latency, token usage and tool failures; exclude raw documents and secrets by default. Langfuse failures must not destroy research results.
 
-Keep Langfuse behind an administrator-authorized gateway; disable public signup and manage individual organization membership through its owner UI using free self-hosted capabilities. Do not assume Enterprise project roles or management APIs. Revoking application administrator access blocks the gateway immediately, including existing sessions.
-
 Maintain a versioned 20-case research evaluation suite for tool use, citations, grounding and completion, with published results and human-reviewed limitations. Model quality, performance and the monthly cost target are unverified until measured.
 
-## Delivery and lifecycle
+## Delivery
 
-GitHub Actions OIDC, PR checks, staging deployment, same-image production promotion through a protected environment, migrations and rollback. Separate deploy, backup/shutdown, restore and explicit full-destruction workflows will be implemented later.
-
-Target under $200/month including Bedrock local usage. Four-hour demo sessions and 20 combined AWS environment hours/month by default. Generate current regional cost estimates including retained storage, addresses, snapshots, identity, secrets and model usage. AWS budget alerts are not hard caps.
-
-An AWS-side expiry workflow backs up state and deletes runtime clusters, nodes, ALBs and RDS instances. Preserve identity, secrets, S3 data, database snapshots, ClickHouse backups and Terraform state for restoration. Abort dependent destructive steps if required backups fail and alert the owner. Separate explicit purge removes retained environment data; infrastructure state is removed last. EKS control planes must be deleted, not merely scaled down.
+GitHub Actions only: PR checks are required on `main`; the manual *Deploy*
+workflow provisions/updates staging and runs smoke tests, and deploys
+production only after staging succeeds in the same run; the manual *Destroy*
+workflow deletes an environment and all its data. Target under $200/month;
+destroy idle environments. See `infra/README.md`.
 
 ## Release acceptance
 
-Demonstrate cross-user isolation, approval/admin revocation, mid-run uploads, reconnect, worker restart, cancellation and duplicate delivery. A 100-turn conversation survives compaction while explicitly saved facts remain accessible. Expose search exhaustion, malformed tool calls, inference failures and parsing failures as recoverable states.
-
-Validate backup -> runtime destruction -> restore preserves accounts, conversations, retrieval and observability history. Inventory teardown for unintended billed resources. Publish GPU benchmarks and cost evidence. See the implementation roadmap for executed checks and remaining live release gates.
+Demonstrate cross-user isolation, approval/admin revocation, mid-run uploads,
+reconnect, worker restart, cancellation and duplicate delivery. A 100-turn
+conversation survives compaction while explicitly saved facts remain
+accessible. Expose search exhaustion, malformed tool calls, inference failures
+and parsing failures as recoverable states.

@@ -30,7 +30,7 @@ The checker validates repository-specific metadata contracts, generated adapter 
 | Python API/workers | Ruff, mypy and pytest implemented; ownership, retry, cancellation and failure tests run. Cross-platform `uv.lock` includes runtime, dev, and project build dependencies; CI installs with `uv sync --locked --group dev --group build`. |
 | Next.js UI | Node behavior/module checks and npm lock are present; production build succeeds. Selected Chrome flows for local session, history, upload, report, attachment, memory CRUD, admin trace view, local non-admin denial, and native Langfuse tracing were exercised. Active-run reconnect, cancellation, upload-during-run, Cognito and admin-revocation acceptance remain outstanding. Current source is JavaScript. |
 | Database/documents | SQLite regressions and local PostgreSQL/pgvector migration, checkpoint recovery, upload indexing, and real CPU BGE inference were exercised. Broader concurrency/capacity and production RDS acceptance remain outstanding. |
-| Deep Agents/models | Real SDK offline execution, 100-turn compaction and 20 synthetic cases run. Live Bedrock/vLLM evaluations remain outstanding. |
+| Deep Agents/models | Real SDK offline execution, 100-turn compaction and 20 synthetic cases run. One budgeted live Bedrock evaluation was run (see `docs/live-evaluation-proposal.md`). |
 | Terraform/Helm | `infra/ci` and `infra/aws` have cross-platform provider locks and validate with backend disabled; Helm lint/render and Compose checks run with synthetic release values. |
 | Deployment | Manual `Deploy` (staging, then optionally production) and `Destroy` workflows; see `infra/README.md`. Staging smoke tests (API readiness, Bedrock call, Langfuse health, public HTTPS) gate production. |
 

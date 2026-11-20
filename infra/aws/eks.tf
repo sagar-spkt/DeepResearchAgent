@@ -108,7 +108,8 @@ resource "aws_eks_node_group" "cpu" {
   depends_on = [aws_iam_role_policy_attachment.node, aws_eks_addon.vpc_cni, aws_eks_addon.kube_proxy]
 }
 
-# Add-on versions verified for Kubernetes 1.37 in us-east-1 (see ADR-0003).
+# Add-on versions verified for Kubernetes 1.37 in us-east-1. Update them
+# together with kubernetes_version before standard support ends.
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name         = aws_eks_cluster.main.name
   addon_name           = "vpc-cni"
