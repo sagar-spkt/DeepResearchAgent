@@ -538,21 +538,21 @@ def test_page_allowlist_is_reconstructed_after_worker_restart(context):
     assert tools.urls == {"https://example.test/evidence"}
 
 
-def _attach_pending(factory, status="pending"):
+def _attach_pending(factory, status="pending", document_id="late"):
     with factory.begin() as session:
         session.add(
             Document(
-                id="late",
+                id=document_id,
                 user_id="alice",
                 conversation_id="conversation",
-                name="late.txt",
+                name=f"{document_id}.txt",
                 media_type="text/plain",
-                storage_key="alice/late.txt",
+                storage_key=f"alice/{document_id}.txt",
                 status=status,
             )
         )
         session.flush()
-        session.add(Attachment(conversation_id="conversation", document_id="late", user_id="alice"))
+        session.add(Attachment(conversation_id="conversation", document_id=document_id, user_id="alice"))
 
 
 def _progress(factory):
@@ -581,8 +581,10 @@ def test_run_waits_for_attached_document_still_indexing(context, monkeypatch):
 def test_run_stops_waiting_after_timeout_and_ignores_ready_or_failed(context, monkeypatch):
     settings, factory = context
     tools = RunTools("run", factory, settings)
+    _attach_pending(factory, status="failed", document_id="broken")
+    _attach_pending(factory, status="ready", document_id="done")
     tools.wait_for_attached_documents(timeout=0)
-    assert _progress(factory) == []  # nothing attached: no wait, no message
+    assert _progress(factory) == []  # only ready/failed attachments: no wait, no message
     _attach_pending(factory)
     monkeypatch.setattr("research_app.research.time.sleep", lambda _seconds: None)
     tools.wait_for_attached_documents(timeout=0, poll=1)

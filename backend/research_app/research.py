@@ -258,6 +258,7 @@ class RunTools:
                 .where(
                     Attachment.conversation_id == self.conversation_id,
                     Attachment.user_id == self.user_id,
+                    Document.user_id == self.user_id,
                     Document.status.not_in(["ready", "failed"]),
                 )
             ) or 0
