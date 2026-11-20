@@ -323,9 +323,13 @@ def _exercise(callback):
     from langchain_core.messages import AIMessage, HumanMessage
     from langchain_core.outputs import ChatGeneration, LLMResult
 
+    # ChatBedrockConverse exposes its model id via the serialized constructor kwargs,
+    # not invocation_params.
     callback.on_chat_model_start(
-        {}, [[HumanMessage(content="private document content")]], run_id="generation",
-        invocation_params={"model_id": "amazon.nova-lite-v1:0"},
+        {"kwargs": {"model_id": "amazon.nova-lite-v1:0"}},
+        [[HumanMessage(content="private document content")]],
+        run_id="generation",
+        invocation_params={"_type": "amazon_bedrock_converse_chat", "stop": None},
     )
     reply = AIMessage(
         content="",
@@ -356,7 +360,12 @@ def test_telemetry_records_inputs_outputs_and_failure_is_nonfatal(context, monke
     assert span_end["output"].startswith("private result") and "[truncated" in span_end["output"]
     assert len(span_end["output"]) < MAX_FIELD_CHARS + 100
     assert "search quota exhausted" in span_error["statusMessage"]
-    assert trace_output == {"id": "run", "output": "Final private report", "environment": settings.environment}
+    assert trace_output == {
+        "id": "run",
+        "timestamp": trace["timestamp"],
+        "output": "Final private report",
+        "environment": settings.environment,
+    }
 
     sent = []
     monkeypatch.setattr("research_app.observability.MAX_BATCH_BYTES", 2_000)
@@ -367,9 +376,15 @@ def test_telemetry_records_inputs_outputs_and_failure_is_nonfatal(context, monke
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr("httpx.post", lambda *a, **k: sent.append(k["content"]) or Accepted())
+    def post(*a, **k):
+        sent.append(k["content"])
+        if len(sent) == 1:
+            raise RuntimeError("first chunk rejected")
+        return Accepted()
+
+    monkeypatch.setattr("httpx.post", post)
     callback.flush()
-    assert len(sent) > 1  # large runs are split into several ingestion requests
+    assert len(sent) > 1  # large runs are split, and one failed chunk does not stop the rest
     assert sum(len(json.loads(body)["batch"]) for body in sent) == len(events)
 
     callback = _langfuse(settings, capture=True)
@@ -380,6 +395,18 @@ def test_telemetry_records_inputs_outputs_and_failure_is_nonfatal(context, monke
     monkeypatch.setattr("httpx.post", unavailable)
     callback.flush()
     assert callback.batch == []
+
+
+def test_telemetry_keeps_final_output_when_event_cap_is_reached(context, monkeypatch):
+    settings, _ = context
+    monkeypatch.setattr("research_app.observability.MAX_EVENTS", 3)
+    callback = _langfuse(settings, capture=True)
+    for index in range(5):
+        callback.on_tool_start({"name": "web_search"}, "query", run_id=f"tool{index}")
+    callback.set_output("Final report")
+    bodies = [item["body"] for item in callback.batch]
+    assert len(bodies) == 3
+    assert bodies[-1]["output"] == "Final report"
 
 
 def test_telemetry_can_omit_content(context):

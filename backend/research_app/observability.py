@@ -9,6 +9,7 @@ Telemetry failures never affect research results.
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 MAX_FIELD_CHARS = 20_000
 MAX_EVENTS = 2_000
 MAX_BATCH_BYTES = 1_000_000
+MAX_EVENT_BYTES = 900_000
+FLUSH_DEADLINE_SECONDS = 15
 
 
 def timestamp():
@@ -47,6 +50,9 @@ def _message(message):
 
 
 def _model_name(serialized, kwargs):
+    metadata = kwargs.get("metadata") or {}
+    if isinstance(metadata.get("ls_model_name"), str) and metadata["ls_model_name"]:
+        return metadata["ls_model_name"]
     params = kwargs.get("invocation_params") or {}
     init = (serialized or {}).get("kwargs") or {}
     for source in (params, init):
@@ -91,12 +97,14 @@ class LangfuseCallback(BaseCallbackHandler):
             "release": getattr(settings, "release_id", "development"),
             "timestamp": timestamp(),
         }
+        self.trace_timestamp = trace["timestamp"]
         if self.capture and question is not None:
             trace["input"] = truncate(question)
         self.append("trace-create", trace)
 
-    def append(self, kind, body):
-        if not self.enabled or len(self.batch) >= MAX_EVENTS:
+    def append(self, kind, body, reserved=False):
+        # Keep one slot for the final trace output so a capped run still shows its report.
+        if not self.enabled or len(self.batch) >= MAX_EVENTS - (0 if reserved else 1):
             return
         if self.environment:
             body.setdefault("environment", self.environment)
@@ -105,7 +113,11 @@ class LangfuseCallback(BaseCallbackHandler):
     def set_output(self, report):
         """Record the final report on the trace (an upsert of the same trace id)."""
         if self.capture:
-            self.append("trace-create", {"id": self.run_id, "output": truncate(report)})
+            self.append(
+                "trace-create",
+                {"id": self.run_id, "timestamp": self.trace_timestamp, "output": truncate(report)},
+                reserved=True,
+            )
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         body = {"id": str(run_id), "traceId": self.run_id, "name": "model", "startTime": timestamp()}
@@ -187,10 +199,23 @@ class LangfuseCallback(BaseCallbackHandler):
             },
         )
 
+    @staticmethod
+    def _bounded(event):
+        """Shrink a single oversized event so it cannot be rejected on its own."""
+        size = len(json.dumps(event, ensure_ascii=False, default=str).encode())
+        if size <= MAX_EVENT_BYTES:
+            return event, size
+        body = dict(event["body"])
+        for field in ("input", "output"):
+            if field in body:
+                body[field] = truncate(body[field], MAX_EVENT_BYTES // 4)
+        event = {**event, "body": body}
+        return event, len(json.dumps(event, ensure_ascii=False, default=str).encode())
+
     def _chunks(self):
         chunk, size = [], 0
         for event in self.batch:
-            event_size = len(json.dumps(event, ensure_ascii=False, default=str).encode())
+            event, event_size = self._bounded(event)
             if chunk and size + event_size > MAX_BATCH_BYTES:
                 yield chunk
                 chunk, size = [], 0
@@ -202,21 +227,28 @@ class LangfuseCallback(BaseCallbackHandler):
     def flush(self):
         if not self.enabled or not self.batch:
             return
+        # Flushing runs before the worker records the result, so bound the total time.
+        deadline = time.monotonic() + FLUSH_DEADLINE_SECONDS
         try:
             for chunk in self._chunks():
-                response = httpx.post(
-                    self.settings.langfuse_base_url.rstrip("/") + "/api/public/ingestion",
-                    content=json.dumps({"batch": chunk}, ensure_ascii=False, default=str),
-                    headers={"Content-Type": "application/json"},
-                    auth=(self.settings.langfuse_public_key, self.settings.langfuse_secret_key),
-                    timeout=10,
-                )
-                response.raise_for_status()
-                if response.status_code == 207 and response.json().get("errors"):
-                    logger.warning("Langfuse rejected some telemetry events")
-        except Exception:
-            # Do not log responses or credentials; tracing is never a dependency of result persistence.
-            logger.warning("Langfuse telemetry unavailable")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("Langfuse telemetry flush timed out; remaining events dropped")
+                    break
+                try:
+                    response = httpx.post(
+                        self.settings.langfuse_base_url.rstrip("/") + "/api/public/ingestion",
+                        content=json.dumps({"batch": chunk}, ensure_ascii=False, default=str),
+                        headers={"Content-Type": "application/json"},
+                        auth=(self.settings.langfuse_public_key, self.settings.langfuse_secret_key),
+                        timeout=min(10, remaining),
+                    )
+                    response.raise_for_status()
+                    if response.status_code == 207 and response.json().get("errors"):
+                        logger.warning("Langfuse rejected some telemetry events")
+                except Exception:
+                    # One rejected chunk must not drop the others. Never log responses or credentials.
+                    logger.warning("Langfuse telemetry unavailable")
         finally:
             self.batch.clear()
 
