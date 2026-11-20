@@ -37,6 +37,9 @@ encrypted state and in Kubernetes Secrets.
 - **Deploy**: run the *Deploy* workflow on `main`. `staging` provisions or
   updates staging and runs smoke tests. `staging-then-production` does the same
   and then deploys production only if staging succeeded in that run.
+- **First owner**: sign up in the app as `BOOTSTRAP_OWNER_EMAIL`, verify the
+  email, then re-run *Deploy*; it promotes that verified Cognito user to
+  approved owner. Approve everyone else from the app's Administration page.
 - **Destroy**: run the *Destroy* workflow, choose the environment and type its
   name again. All of its data is deleted; nothing is retained.
 - **Debug**: users listed in `admin_principal_arns` can run
