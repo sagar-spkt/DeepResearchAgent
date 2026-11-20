@@ -118,4 +118,4 @@ The 20-case offline dataset verifies harness execution/source plumbing, not real
 
 ## Observability boundary
 
-Langfuse callbacks batch metadata-only generation/tool traces; transport failure does not destroy a report. Admin trace metadata is available through `/api/admin/traces` when project keys are configured and live permissions allow reads. The native Langfuse console is not exposed publicly; in AWS reach it with `kubectl port-forward` (see `infra/README.md`).
+Langfuse callbacks record every model and tool call with timing, token usage, errors and (with `LANGFUSE_CAPTURE_IO=true`, the default) prompts, completions, tool arguments/results and the run's question and report; transport failure does not destroy a report. Admin trace metadata is available through `/api/admin/traces` when project keys are configured and live permissions allow reads. The native Langfuse console is not exposed publicly; in AWS reach it with `kubectl port-forward` (see `infra/README.md`).

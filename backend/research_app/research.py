@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from .db import add_event
 from .model_factory import create_model
 from .models import Event, Memory, Run, User, now
-from .observability import LangfuseMetadataCallback
+from .observability import LangfuseCallback
 from .retrieval import retrieve
 
 
@@ -390,12 +390,13 @@ def execute_research(run_id, session_factory, settings, *, model_budget=None):
         rate_limiter=model_budget,
         cache=False if model_budget is not None else None,
     )
-    callback = LangfuseMetadataCallback(
+    callback = LangfuseCallback(
         settings,
         run_id,
         tools.conversation_id,
         tools.user_id,
         usage_collector=model_budget,
+        question=prompt,
     )
     system = (
         "You are a general-purpose research assistant. Plan complex research and use up to two researcher subagents concurrently. "
@@ -448,7 +449,9 @@ def execute_research(run_id, session_factory, settings, *, model_budget=None):
                 and not previous_messages[-1].tool_calls
             ):
                 tools.check()
-                return normalize_report(previous_messages[-1].content)
+                report = normalize_report(previous_messages[-1].content)
+                callback.set_output(report)
+                return report
             inputs = (
                 None
                 if same_run and snapshot.next
@@ -470,6 +473,7 @@ def execute_research(run_id, session_factory, settings, *, model_budget=None):
                 tools.check()
             state = agent.get_state(config).values
             report = normalize_report(state["messages"][-1].content)
+            callback.set_output(report)
             tools.check()
             return report
     finally:

@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     langfuse_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    # Record prompts, completions, tool arguments/results and reports in traces.
+    langfuse_capture_io: bool = True
     observability_upstream: str = ""
     observability_console_url: str = ""
     allowed_origins: list[str] = ["http://localhost:3000"]
