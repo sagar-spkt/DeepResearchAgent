@@ -22,6 +22,9 @@ spec:
           image: {{ if eq $name "web" }}{{ $root.Values.webImage | quote }}{{ else }}{{ $root.Values.workerImage | quote }}{{ end }}
           envFrom: [{ secretRef: { name: {{ $root.Values.secretName }} } }]
           env:
+            # Next.js otherwise binds only to the pod IP from $HOSTNAME, which
+            # breaks `kubectl port-forward` (it connects via localhost).
+            - { name: HOSTNAME, value: "0.0.0.0" }
             - { name: AUTH_DISABLE_SIGNUP, value: "true" }
             - { name: TELEMETRY_ENABLED, value: "false" }
             - { name: REDIS_HOST, value: "observability-valkey" }

@@ -152,6 +152,9 @@ r = boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION"]).conver
 print("bedrock ok:", r["output"]["message"]["content"][0]["text"])'
 kubectl -n "$NAMESPACE" exec deploy/research-api -- python -c \
   'import urllib.request; print("langfuse:", urllib.request.urlopen("http://langfuse:3000/api/public/health", timeout=10).read().decode())'
+# kubectl port-forward (how operators open the console) connects via localhost.
+kubectl -n "$NAMESPACE" exec deploy/langfuse-web -- wget -qO- -T 10 http://127.0.0.1:3000/api/public/health >/dev/null
+echo "langfuse port-forward target ok"
 ok=""
 for _ in $(seq 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$APP_URL/" || true)
