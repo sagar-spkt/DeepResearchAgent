@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 
 from .db import add_event
 from .model_factory import create_model
-from .models import Event, Memory, Run, User, now
+from .models import Attachment, Document, Event, Memory, Run, User, now
 from .observability import LangfuseCallback
 from .retrieval import retrieve
 
@@ -248,6 +248,37 @@ class RunTools:
                     raise RunStopped("Web search budget exhausted")
                 add_event(session, self.run_id, "search_reserved", {"message": "Searching sources"})
 
+    def indexing_attachments(self) -> int:
+        """Count documents attached to this conversation that are still being indexed."""
+        with self.factory() as session:
+            return session.scalar(
+                select(func.count())
+                .select_from(Attachment)
+                .join(Document, Document.id == Attachment.document_id)
+                .where(
+                    Attachment.conversation_id == self.conversation_id,
+                    Attachment.user_id == self.user_id,
+                    Document.status.not_in(["ready", "failed"]),
+                )
+            ) or 0
+
+    def wait_for_attached_documents(self, timeout=60.0, poll=2.0):
+        """Give just-uploaded attachments a short time to finish indexing before research starts."""
+        pending = self.indexing_attachments()
+        if not pending:
+            return
+        self.emit("progress", {"message": f"Waiting for {pending} attached document(s) to finish indexing"})
+        deadline = time.monotonic() + timeout
+        while pending and time.monotonic() < deadline:
+            time.sleep(poll)
+            self.check()
+            pending = self.indexing_attachments()
+        if pending:
+            self.emit(
+                "progress",
+                {"message": f"Continuing while {pending} document(s) are still indexing; they are used once ready"},
+            )
+
     def retrieve_documents(self, query: str) -> str:
         """Search ready documents explicitly attached to this conversation, with source locators."""
         self.check()
@@ -459,7 +490,9 @@ def execute_research(run_id, session_factory, settings, *, model_budget=None):
             )
             if inputs is not None:
                 # Do not rely on the model choosing the retrieval tool: ready, attached
-                # evidence must be available before the first synthesis turn.
+                # evidence must be available before the first synthesis turn. A file
+                # uploaded just before asking may still be indexing, so wait briefly.
+                tools.wait_for_attached_documents()
                 evidence = tools.retrieve_documents(prompt)
                 inputs["messages"][0].content = (
                     f"{prompt}\n\n"

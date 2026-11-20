@@ -1,7 +1,7 @@
 """Register model prices in Langfuse so traces show dollar costs.
 
 Langfuse's built-in price table has no Amazon Nova models, so generations from
-Bedrock Nova Lite would otherwise cost $0. This script makes the project's
+Bedrock Nova models would otherwise cost $0. This script makes the project's
 custom model definitions match MODELS: it creates missing ones and replaces
 ones whose prices changed. Run it where Langfuse and its project keys are
 reachable (the deploy workflow runs it inside the API pod):
@@ -21,9 +21,17 @@ import os
 import sys
 import urllib.request
 
-# AWS Price List API, AmazonBedrock, us-east-1, Standard on-demand, queried
-# 2026-11-15: $0.00006 / 1K input tokens and $0.00024 / 1K output tokens.
+# AWS Price List API, AmazonBedrock, us-east-1, Standard on-demand.
+# Nova Pro (cloud default), queried 2026-11-20: $0.0008 / 1K input, $0.0032 / 1K output.
+# Nova Lite (local development), queried 2026-11-15: $0.00006 / 1K input, $0.00024 / 1K output.
 MODELS = [
+    {
+        "modelName": "amazon.nova-pro-v1:0",
+        "matchPattern": r"(?i)^(us\.)?(amazon\.)?nova-pro-v1(:0)?$",
+        "unit": "TOKENS",
+        "inputPrice": 0.80 / 1_000_000,
+        "outputPrice": 3.20 / 1_000_000,
+    },
     {
         "modelName": "amazon.nova-lite-v1:0",
         "matchPattern": r"(?i)^(us\.)?(amazon\.)?nova-lite-v1(:0)?$",

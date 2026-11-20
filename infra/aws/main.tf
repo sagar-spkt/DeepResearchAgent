@@ -68,7 +68,7 @@ variable "database_instance_class" {
 
 variable "bedrock_model_id" {
   type    = string
-  default = "amazon.nova-lite-v1:0"
+  default = "amazon.nova-pro-v1:0"
 }
 
 variable "admin_principal_arns" {

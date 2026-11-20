@@ -24,7 +24,8 @@ production updated only after staging passes.
   runs only after the staging job (apply, deploy, smoke tests) succeeds in the
   same run. Each environment builds its images from the same commit.
 - `Destroy` workflow: manual, confirmed by retyping the environment name.
-- Staging and production use Amazon Bedrock (Nova Lite) instead of private
+- Staging and production use Amazon Bedrock (Nova Pro, chosen over Nova Lite
+  after browser testing showed weak document use and citations) instead of private
   vLLM for now. The backend model factory still supports a vLLM endpoint; the
   Helm chart is Bedrock-only.
 - Langfuse is self-hosted in-cluster without a public route (no

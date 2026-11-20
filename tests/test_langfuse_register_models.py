@@ -6,7 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("register", ROOT / "scripts/langfuse_register_models.py")
 register = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(register)
-NOVA = register.MODELS[0]
+NOVA = next(m for m in register.MODELS if m["modelName"] == "amazon.nova-lite-v1:0")
+PRO = next(m for m in register.MODELS if m["modelName"] == "amazon.nova-pro-v1:0")
 
 
 class PlanTest(unittest.TestCase):
@@ -35,6 +36,21 @@ class PlanTest(unittest.TestCase):
         for model_id in ["amazon.nova-lite-v1:0", "us.amazon.nova-lite-v1:0", "AMAZON.NOVA-LITE-V1:0"]:
             self.assertTrue(pattern.match(model_id), model_id)
         self.assertIsNone(pattern.match("amazon.nova-pro-v1:0"))
+
+
+    def test_nova_pro_price_and_pattern(self):
+        import re
+
+        self.assertAlmostEqual(PRO["inputPrice"] * 1_000_000, 0.80)
+        self.assertAlmostEqual(PRO["outputPrice"] * 1_000_000, 3.20)
+        pattern = re.compile(PRO["matchPattern"].replace("(?i)", ""), re.IGNORECASE)
+        self.assertTrue(pattern.match("amazon.nova-pro-v1:0"))
+        self.assertTrue(pattern.match("us.amazon.nova-pro-v1:0"))
+        self.assertIsNone(pattern.match("amazon.nova-lite-v1:0"))
+
+    def test_registers_each_model_independently(self):
+        existing = [{"id": "lite", **NOVA}]
+        self.assertEqual(([], [PRO]), register.plan(existing, register.MODELS))
 
 
 if __name__ == "__main__":

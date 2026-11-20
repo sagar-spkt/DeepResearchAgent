@@ -61,6 +61,7 @@ export default function ResearchDesk() {
     return detail;
   }
   async function createConversation() {
+    setTab('research');
     const ticket = beginSelection(null);
     const created = await api('/conversations', {method: 'POST', body: json({title: 'New research'})});
     await refresh();
@@ -117,7 +118,8 @@ export default function ResearchDesk() {
       const value = await api(`/conversations/${selected.id}/runs`, {method: 'POST', body: json({prompt: text})});
       if (!gate.current.isCurrent(ticket)) return;
       setPrompt(''); setReport(''); setProgress([]);
-      setConversation(current => ({...current, messages: [...(current?.messages || []), {id: crypto.randomUUID(), role: 'user', content: text}]}));
+      setConversation(current => ({...current, title: value.conversation_title || current?.title, messages: [...(current?.messages || []), {id: crypto.randomUUID(), role: 'user', content: text}]}));
+      if (value.conversation_title) setConversations(items => items.map(c => c.id === selected.id ? {...c, title: value.conversation_title} : c));
       followRun(value, selected.id, ticket);
     } catch(e) {fail(e);} finally {sending.current = false;}
   }
