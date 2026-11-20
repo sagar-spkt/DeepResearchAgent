@@ -1,6 +1,6 @@
 import {NextResponse} from 'next/server';
 import {cookies} from 'next/headers';
-import {configuration, cookieAttributes, sessionCookieHeaders, pkce, seal, unseal, stateMatches, FLOW_COOKIE} from '../../../lib/auth.mjs';
+import {configuration, logoutUrl, cookieAttributes, sessionCookieHeaders, pkce, seal, unseal, stateMatches, FLOW_COOKIE} from '../../../lib/auth.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,7 +10,7 @@ export async function GET(request, {params}) {
     const {action} = await params;
     const store = await cookies();
     if (action === 'logout') {
-      const response = NextResponse.redirect(config.base);
+      const response = NextResponse.redirect(logoutUrl(config));
       response.cookies.set(FLOW_COOKIE, '', {...cookieAttributes(config), maxAge: 0});
       for (const header of sessionCookieHeaders('', config, 0)) response.headers.append('Set-Cookie', header);
       return response;

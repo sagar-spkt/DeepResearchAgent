@@ -19,6 +19,14 @@ export function configuration(env = process.env) {
   }
   return {local, environment, base, domain, observabilityHost, clientId: env.COGNITO_CLIENT_ID, secret: env.AUTH_SESSION_SECRET, devUser: env.DEV_USER || env.NEXT_PUBLIC_DEV_USER || 'demo@example.test'};
 }
+// Ending only the app cookie would leave the Cognito session alive, so the next
+// "Log in" on the same browser would sign in again without a password.
+export function logoutUrl(config) {
+  if (config.local || !config.domain) return config.base;
+  const url = new URL('/logout', config.domain);
+  url.search = new URLSearchParams({client_id: config.clientId, logout_uri: config.base.origin}).toString();
+  return url;
+}
 export function cookieAttributes(config, {sharedSession = false} = {}) {
   const attributes = {httpOnly: true, sameSite: 'lax', secure: config.base.protocol === 'https:', path: '/'};
   // Derive the sole permitted cookie domain; no operator-supplied root domain is accepted.

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {configuration, seal, unseal, sessionHeaders, stateMatches, pkce, sameOriginMutation, cookieAttributes, hasDuplicateSessionCookies, sessionCookieHeaders} from '../lib/auth.mjs';
+import {configuration, seal, unseal, sessionHeaders, stateMatches, pkce, sameOriginMutation, cookieAttributes, hasDuplicateSessionCookies, sessionCookieHeaders, logoutUrl} from '../lib/auth.mjs';
 import {eventParser} from '../lib/sse.mjs';
 import {validateUpload, terminal, safeConsoleUrl} from '../lib/api.mjs';
 const secret = 'a'.repeat(64);
@@ -88,4 +88,12 @@ test('shared session migration clears legacy cookie before issuing the new cooki
   assert.ok(logout.every(value=>value.includes('Max-Age=0')));
   assert.equal(sessionCookieHeaders('sealed_token',configuration(cloudEnv),3600).length,1);
   assert.throws(()=>sessionCookieHeaders('injected\r\nheader',config,1));
+});
+test('logout ends the Cognito session and returns to the app origin', () => {
+  const config = configuration({APP_ENV:'staging', AUTH_SESSION_SECRET:secret, APP_BASE_URL:'https://staging.example.test', COGNITO_DOMAIN:'https://auth.example.test', COGNITO_CLIENT_ID:'client-1'});
+  const url = logoutUrl(config);
+  assert.equal(url.origin + url.pathname, 'https://auth.example.test/logout');
+  assert.equal(url.searchParams.get('client_id'), 'client-1');
+  assert.equal(url.searchParams.get('logout_uri'), 'https://staging.example.test');
+  assert.equal(logoutUrl(configuration({APP_ENV:'local', AUTH_MODE:'local'})).href, 'http://localhost:3000/');
 });
