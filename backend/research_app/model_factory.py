@@ -65,8 +65,12 @@ def create_model(
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
     output_limit = max_output_tokens or 2048
-    profile = {"max_input_tokens": 16384, "max_output_tokens": output_limit}
+    # Deep Agents summarizes the conversation as it approaches max_input_tokens, so a
+    # window that is too small compresses away retrieved evidence mid-run.
+    profile = {"max_input_tokens": settings.model_context_tokens, "max_output_tokens": output_limit}
     if settings.model_provider == "fake":
+        # Keep the offline fixture small so compaction paths stay exercised in tests.
+        profile["max_input_tokens"] = min(settings.model_context_tokens, 16384)
         if settings.environment != "local":
             raise ValueError("Fake inference is restricted to local mode")
         return OfflineResearchModel(profile=profile)

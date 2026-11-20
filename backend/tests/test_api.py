@@ -527,3 +527,16 @@ def test_console_auth_request_rechecks_admin_access(service):
     client.patch(f"/api/admin/users/{pending['id']}", json={"role": "user"})
     client.headers["X-Dev-User"] = "pending-console@example.test"
     assert client.get("/api/admin/access").status_code == 403
+
+
+def test_real_models_get_a_large_context_window_before_summarizing():
+    from research_app.model_factory import create_model
+
+    bedrock = Settings(model_provider="bedrock", bedrock_model_id="amazon.nova-pro-v1:0", embedding_provider="fake")
+    assert create_model(bedrock, "user").profile["max_input_tokens"] == 64_000
+    custom = Settings(model_provider="bedrock", bedrock_model_id="amazon.nova-pro-v1:0", embedding_provider="fake", model_context_tokens=120_000)
+    assert create_model(custom, "user").profile["max_input_tokens"] == 120_000
+    offline = Settings(model_provider="fake", embedding_provider="fake")
+    assert create_model(offline, "user").profile["max_input_tokens"] == 16384
+    with pytest.raises(ValueError):
+        Settings(model_provider="fake", embedding_provider="fake", model_context_tokens=100)
