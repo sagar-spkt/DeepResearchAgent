@@ -536,3 +536,58 @@ def test_page_allowlist_is_reconstructed_after_worker_restart(context):
         add_event(session, "run", "sources", {"urls": ["https://example.test/evidence"]})
     tools = RunTools("run", factory, settings)
     assert tools.urls == {"https://example.test/evidence"}
+
+
+def _attach_pending(factory, status="pending", document_id="late"):
+    with factory.begin() as session:
+        session.add(
+            Document(
+                id=document_id,
+                user_id="alice",
+                conversation_id="conversation",
+                name=f"{document_id}.txt",
+                media_type="text/plain",
+                storage_key=f"alice/{document_id}.txt",
+                status=status,
+            )
+        )
+        session.flush()
+        session.add(Attachment(conversation_id="conversation", document_id=document_id, user_id="alice"))
+
+
+def _progress(factory):
+    with factory() as session:
+        return [
+            e.data["message"]
+            for e in session.scalars(select(Event).where(Event.run_id == "run", Event.kind == "progress"))
+        ]
+
+
+def test_run_waits_for_attached_document_still_indexing(context, monkeypatch):
+    settings, factory = context
+    _attach_pending(factory)
+    tools = RunTools("run", factory, settings)
+
+    def indexing_finishes(_seconds):
+        with factory.begin() as session:
+            session.get(Document, "late").status = "ready"
+
+    monkeypatch.setattr("research_app.research.time.sleep", indexing_finishes)
+    tools.wait_for_attached_documents(timeout=30, poll=1)
+    assert _progress(factory) == ["Waiting for 1 attached document(s) to finish indexing"]
+    assert tools.indexing_attachments() == 0
+
+
+def test_run_stops_waiting_after_timeout_and_ignores_ready_or_failed(context, monkeypatch):
+    settings, factory = context
+    tools = RunTools("run", factory, settings)
+    _attach_pending(factory, status="failed", document_id="broken")
+    _attach_pending(factory, status="ready", document_id="done")
+    tools.wait_for_attached_documents(timeout=0)
+    assert _progress(factory) == []  # only ready/failed attachments: no wait, no message
+    _attach_pending(factory)
+    monkeypatch.setattr("research_app.research.time.sleep", lambda _seconds: None)
+    tools.wait_for_attached_documents(timeout=0, poll=1)
+    messages = _progress(factory)
+    assert messages[0].startswith("Waiting for 1")
+    assert messages[-1].startswith("Continuing while 1 document(s) are still indexing")

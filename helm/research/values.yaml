@@ -6,7 +6,7 @@
   "webSecret": "research-web-env",
   "bootstrapSecret": "research-db-bootstrap",
   "model": {
-    "bedrockModelId": "amazon.nova-lite-v1:0"
+    "bedrockModelId": "amazon.nova-pro-v1:0"
   },
   "ingress": {
     "enabled": false,

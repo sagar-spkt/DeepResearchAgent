@@ -132,6 +132,23 @@ def test_replay_completed_run_and_cancel_queued(service):
     assert not process_one(factory, settings, execute=lambda *_: pytest.fail("Cancelled work ran"))
 
 
+def test_first_question_titles_untitled_conversation(service):
+    client, factory, settings = service
+    cid = client.post("/api/conversations", json={"title": "New research"}).json()["id"]
+    question = "  How do   cities adapt to extreme heat, and what does it cost? " + "detail " * 20
+    run = client.post(f"/api/conversations/{cid}/runs", json={"prompt": question}).json()
+    title = run["conversation_title"]
+    assert title.startswith("How do cities adapt to extreme heat, and what does it cost?")
+    assert title.endswith("…") and len(title) <= 80
+    assert client.get(f"/api/conversations/{cid}").json()["title"] == title
+    assert process_one(factory, settings, execute=lambda *_: "Report")
+    follow_up = client.post(f"/api/conversations/{cid}/runs", json={"prompt": "Follow-up"}).json()
+    assert follow_up["conversation_title"] == title  # later questions keep the first title
+    named = conversation(client)  # explicitly titled conversations are never renamed
+    client.post(f"/api/conversations/{named}/runs", json={"prompt": "Short question"})
+    assert client.get(f"/api/conversations/{named}").json()["title"] == "Test research"
+
+
 def test_single_global_worker_and_expired_lease_recovery(service):
     client, factory, settings = service
     first = conversation(client)

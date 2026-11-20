@@ -20,7 +20,7 @@ Use Tavily free credits through a replaceable adapter. Do not enable paid upgrad
 
 ## Model service
 
-Staging, production and local real-model runs use Amazon Bedrock (Nova Lite)
+Staging and production use Amazon Bedrock Nova Pro; local real-model runs default to the cheaper Nova Lite. Both use Amazon Bedrock
 through `ChatBedrockConverse` with an explicitly configured model ID; fake
 providers are for offline tests only and there is no silent paid fallback. The
 model factory also supports an OpenAI-compatible vLLM endpoint for future

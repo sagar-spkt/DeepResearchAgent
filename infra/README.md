@@ -43,8 +43,9 @@ encrypted state and in Kubernetes Secrets.
 - **Destroy**: run the *Destroy* workflow, choose the environment and type its
   name again. All of its data is deleted; nothing is retained.
 - **Costs in Langfuse**: Langfuse has no built-in Amazon Nova prices, so each
-  deploy registers them with `scripts/langfuse_register_models.py` (Nova Lite:
-  $0.06 / $0.24 per million input / output tokens, AWS Price List 2026-11-15).
+  deploy registers them with `scripts/langfuse_register_models.py` (Nova Pro,
+  the cloud default: $0.80 / $3.20 per million input / output tokens; Nova Lite,
+  used locally: $0.06 / $0.24).
   Update `MODELS` there when prices or models change. Only runs recorded after
   registration are priced; Tavily credits are not included.
 - **Debug**: users listed in `admin_principal_arns` can run

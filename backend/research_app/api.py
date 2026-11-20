@@ -57,6 +57,17 @@ def document_dict(document):
     return row_dict(document, "id name media_type status error conversation_id created_at")
 
 
+DEFAULT_TITLE = "New research"
+
+
+def title_from_prompt(prompt: str, limit: int = 80) -> str:
+    """A readable conversation title from the first question."""
+    text = " ".join(prompt.split())
+    if len(text) <= limit:
+        return text or DEFAULT_TITLE
+    return text[: limit - 1].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+
+
 def owned(session, model, object_id, user):
     row = session.get(model, object_id)
     if row is None or row.user_id != user.id:
@@ -211,7 +222,7 @@ def create_app(settings=None, session_factory=None):
             fresh_user = session.get(User, user.id)
             if not fresh_user.approved:
                 raise HTTPException(403, "Administrator approval required")
-            owned(session, Conversation, conversation_id, user)
+            conversation = owned(session, Conversation, conversation_id, user)
             if session.scalar(
                 select(Run.id)
                 .where(
@@ -226,11 +237,13 @@ def create_app(settings=None, session_factory=None):
             if count >= settings.max_queue_size:
                 raise HTTPException(429, "Research queue is full; try again later")
             run = Run(user_id=user.id, conversation_id=conversation_id, prompt=body.prompt.strip())
+            if conversation.title == DEFAULT_TITLE:
+                conversation.title = title_from_prompt(run.prompt)
             session.add(run)
             session.flush()
             session.add(Message(conversation_id=conversation_id, role="user", content=run.prompt))
             add_event(session, run.id, "queued", {"status": "queued"})
-            result = run_dict(run)
+            result = {**run_dict(run), "conversation_title": conversation.title}
         # DB is source of truth. SQS is a wakeup hint; worker sweeps DB after outages.
         if settings.sqs_queue_url:
             try:
