@@ -35,8 +35,16 @@ resource "aws_cognito_user_pool_client" "web" {
 }
 
 resource "aws_cognito_user_pool_domain" "users" {
-  domain       = "${local.name}-${local.account_id}"
-  user_pool_id = aws_cognito_user_pool.users.id
+  domain                = "${local.name}-${local.account_id}"
+  user_pool_id          = aws_cognito_user_pool.users.id
+  managed_login_version = 2
+}
+
+# Managed Login (v2) pages need a branding style; use Cognito's defaults.
+resource "aws_cognito_managed_login_branding" "web" {
+  user_pool_id                = aws_cognito_user_pool.users.id
+  client_id                   = aws_cognito_user_pool_client.web.id
+  use_cognito_provided_values = true
 }
 
 resource "aws_acm_certificate" "app" {
