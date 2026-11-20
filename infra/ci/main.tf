@@ -24,9 +24,12 @@ provider "aws" {
   }
 }
 
-variable "github_repository" {
+# This repository uses GitHub's immutable OIDC subject format
+# (owner@owner_id/repo@repo_id), see
+# GET repos/{owner}/{repo}/actions/oidc/customization/sub.
+variable "github_subject_prefix" {
   type    = string
-  default = "sagar-spkt/DeepResearchAgent"
+  default = "repo:sagar-spkt@22609549/DeepResearchAgent@1457879530"
 }
 
 variable "environments" {
@@ -54,7 +57,7 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.key}"]
+      values   = ["${var.github_subject_prefix}:environment:${each.key}"]
     }
   }
 }
