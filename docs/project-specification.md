@@ -39,7 +39,7 @@ Nothing here is highly available.
 
 ## Observability and evaluation
 
-Self-host Langfuse with its required PostgreSQL, ClickHouse, Valkey and S3 dependencies. Trace via LangChain callbacks, correlating environment/release/conversation/run. Record latency, token usage and tool failures; exclude raw documents and secrets by default. Langfuse failures must not destroy research results.
+Self-host Langfuse with its required PostgreSQL, ClickHouse, Valkey and S3 dependencies. Trace via LangChain callbacks, correlating environment/release/conversation/run. Record latency, token usage, tool failures, model names, prompts, completions, tool arguments/results and each run's question and final report (fields truncated to 20,000 characters). Content capture is controlled by `LANGFUSE_CAPTURE_IO` (on by default); Langfuse is private and admin-only. Langfuse failures must not destroy research results.
 
 Maintain a versioned 20-case research evaluation suite for tool use, citations, grounding and completion, with published results and human-reviewed limitations. Model quality, performance and the monthly cost target are unverified until measured.
 

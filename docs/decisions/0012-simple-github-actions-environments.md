@@ -28,7 +28,9 @@ production updated only after staging passes.
   vLLM for now. The backend model factory still supports a vLLM endpoint; the
   Helm chart is Bedrock-only.
 - Langfuse is self-hosted in-cluster without a public route (no
-  administrator console gateway).
+  administrator console gateway). Traces include full model/tool inputs and
+  outputs (`LANGFUSE_CAPTURE_IO`, on by default), so Langfuse holds user
+  prompts, retrieved document text and reports.
 
 ## Consequences
 

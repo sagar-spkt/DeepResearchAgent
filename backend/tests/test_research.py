@@ -16,7 +16,7 @@ from research_app.models import (
     User,
     now,
 )
-from research_app.observability import LangfuseMetadataCallback
+from research_app.observability import MAX_FIELD_CHARS, LangfuseCallback
 from research_app.research import (
     ModelGenerationBudget,
     RunStopped,
@@ -309,22 +309,70 @@ def test_tavily_usage_metadata_is_collected_without_recording_search_content(con
     assert "synthetic query" not in json.dumps(snapshot)
 
 
-def test_telemetry_omits_content_and_failure_is_nonfatal(context, monkeypatch):
-    settings, _ = context
+def _langfuse(settings, capture):
     settings.langfuse_base_url = "http://langfuse.invalid"
     settings.langfuse_public_key = "public"
     settings.langfuse_secret_key = "secret"
-    callback = LangfuseMetadataCallback(settings, "run", "conversation", "alice@example.test")
-    callback.on_chat_model_start({}, [["private document content"]], run_id="generation")
+    settings.langfuse_capture_io = capture
+    return LangfuseCallback(
+        settings, "run", "conversation", "alice@example.test", question="What is Zephyr?"
+    )
+
+
+def _exercise(callback):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    callback.on_chat_model_start(
+        {}, [[HumanMessage(content="private document content")]], run_id="generation",
+        invocation_params={"model_id": "amazon.nova-lite-v1:0"},
+    )
+    reply = AIMessage(
+        content="",
+        tool_calls=[{"name": "web_search", "args": {"query": "zephyr"}, "id": "c1"}],
+        usage_metadata={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+    )
+    callback.on_llm_end(LLMResult(generations=[[ChatGeneration(message=reply)]]), run_id="generation")
     callback.on_tool_start({"name": "retrieve_documents"}, "private query", run_id="tool")
-    assert "private" not in json.dumps(callback.batch)
-    events = [item["body"] for item in callback.batch]
-    trace = events[0]
-    assert trace["id"] == "run"
-    assert trace["sessionId"] == "conversation"
+    callback.on_tool_end("private result " + "x" * (MAX_FIELD_CHARS + 50), run_id="tool")
+    callback.on_tool_error(RuntimeError("search quota exhausted"), run_id="tool2")
+    callback.set_output("Final private report")
+    return [item["body"] for item in callback.batch]
+
+
+def test_telemetry_records_inputs_outputs_and_failure_is_nonfatal(context, monkeypatch):
+    settings, _ = context
+    callback = _langfuse(settings, capture=True)
+    events = _exercise(callback)
+    trace, generation, generation_end, span, span_end, span_error, trace_output = events
+    assert trace["id"] == "run" and trace["sessionId"] == "conversation"
     assert trace["userId"] != "alice@example.test"
-    assert events[1]["traceId"] == "run"
-    assert events[2]["traceId"] == "run"
+    assert trace["input"] == "What is Zephyr?" and trace["environment"] == settings.environment
+    assert generation["traceId"] == "run" and generation["model"] == "amazon.nova-lite-v1:0"
+    assert generation["input"] == [{"role": "human", "content": "private document content"}]
+    assert generation_end["usage"] == {"input": 10, "output": 2, "total": 12}
+    assert generation_end["output"]["tool_calls"] == [{"name": "web_search", "args": {"query": "zephyr"}}]
+    assert span["name"] == "retrieve_documents" and span["input"] == "private query"
+    assert span_end["output"].startswith("private result") and "[truncated" in span_end["output"]
+    assert len(span_end["output"]) < MAX_FIELD_CHARS + 100
+    assert "search quota exhausted" in span_error["statusMessage"]
+    assert trace_output == {"id": "run", "output": "Final private report", "environment": settings.environment}
+
+    sent = []
+    monkeypatch.setattr("research_app.observability.MAX_BATCH_BYTES", 2_000)
+
+    class Accepted:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("httpx.post", lambda *a, **k: sent.append(k["content"]) or Accepted())
+    callback.flush()
+    assert len(sent) > 1  # large runs are split into several ingestion requests
+    assert sum(len(json.loads(body)["batch"]) for body in sent) == len(events)
+
+    callback = _langfuse(settings, capture=True)
 
     def unavailable(*a, **k):
         raise RuntimeError("offline transport")
@@ -332,6 +380,14 @@ def test_telemetry_omits_content_and_failure_is_nonfatal(context, monkeypatch):
     monkeypatch.setattr("httpx.post", unavailable)
     callback.flush()
     assert callback.batch == []
+
+
+def test_telemetry_can_omit_content(context):
+    settings, _ = context
+    events = _exercise(_langfuse(settings, capture=False))
+    assert "private" not in json.dumps(events) and "Zephyr" not in json.dumps(events)
+    assert "quota" not in json.dumps(events)
+    assert events[2]["usage"]["input"] == 10  # usage and timing are still recorded
 
 
 def test_stale_checkpoint_writes_are_fenced(context):
