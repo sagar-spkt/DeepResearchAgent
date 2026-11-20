@@ -3,7 +3,12 @@
   "backendImage": "",
   "webImage": "",
   "applicationSecret": "research-application",
-  "vllmSecret": "research-vllm",
+  "webSecret": "research-web-env",
+  "bootstrapSecret": "research-db-bootstrap",
+  "model": {
+    "provider": "bedrock",
+    "bedrockModelId": "amazon.nova-lite-v1:0"
+  },
   "ingress": {
     "enabled": false,
     "host": "",
@@ -16,7 +21,7 @@
     "revision": "",
     "maxModelLen": 16384
   },
-  "webSecret": "research-web-env",
+  "vllmSecret": "research-vllm",
   "console": {
     "enabled": false,
     "image": ""

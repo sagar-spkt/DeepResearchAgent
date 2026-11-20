@@ -61,6 +61,9 @@ def _ensure_role(cursor: psycopg.Cursor, name: str, password: str) -> None:
         "ALTER ROLE {} WITH LOGIN PASSWORD {}" if exists else "CREATE ROLE {} LOGIN PASSWORD {}"
     ).format(sql.Identifier(name), sql.Literal(password))
     cursor.execute(statement)
+    # PostgreSQL 16+: the (non-superuser) RDS master must be able to SET ROLE
+    # to a role before it can make it a database owner. Re-granting is a no-op.
+    cursor.execute(sql.SQL("GRANT {} TO CURRENT_USER").format(sql.Identifier(name)))
 
 
 def _ensure_database(cursor: psycopg.Cursor, name: str, owner: str) -> None:

@@ -7,6 +7,8 @@ metadata:
   name: research-{{ $name }}
 spec:
   replicas: 1
+  # A single node has no headroom for surge pods during rolling updates.
+  strategy: { type: Recreate }
   selector:
     matchLabels: { app: research, component: {{ $name }} }
   template:
@@ -46,10 +48,14 @@ spec:
             - { name: OBSERVABILITY_CONSOLE_URL, value: {{ printf "https://observability.%s/" $root.Values.ingress.host | quote }} }
             {{- end }}
             - { name: ENVIRONMENT, value: {{ $root.Values.environment | quote }} }
-            - { name: MODEL_PROVIDER, value: vllm }
+            - { name: MODEL_PROVIDER, value: {{ $root.Values.model.provider | quote }} }
+            {{- if eq $root.Values.model.provider "vllm" }}
+            - { name: VLLM_BASE_URL, value: "http://research-vllm:8000/v1" }
+            {{- else }}
+            - { name: BEDROCK_MODEL_ID, value: {{ $root.Values.model.bedrockModelId | quote }} }
+            {{- end }}
             - { name: STORAGE_BACKEND, value: s3 }
             - { name: EMBEDDING_PROVIDER, value: sentence-transformers }
-            - { name: VLLM_BASE_URL, value: "http://research-vllm:8000/v1" }
           {{- if ne $name "web" }}
           envFrom: [{ secretRef: { name: {{ $root.Values.applicationSecret }} } }]
           {{- else }}
@@ -66,15 +72,6 @@ kind: ServiceAccount
 metadata:
   name: research-web
 automountServiceAccountToken: false
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: research-application
-  annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: before-hook-creation
 ---
 {{ range $name := list "api" "web" }}
 apiVersion: v1

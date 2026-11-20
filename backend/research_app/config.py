@@ -77,8 +77,8 @@ class Settings(BaseSettings):
                 self.cognito_issuer.startswith("https://cognito-idp.") and self.cognito_client_id
             ):
                 raise ValueError("Cloud environments require Cognito issuer and client ID")
-            if self.storage_backend != "s3" or self.model_provider != "vllm":
-                raise ValueError("Cloud environments require S3 and private vLLM")
+            if self.storage_backend != "s3" or self.model_provider not in {"vllm", "bedrock"}:
+                raise ValueError("Cloud environments require S3 and a real model provider")
             if self.embedding_provider != "sentence-transformers":
                 raise ValueError("Cloud environments require real embeddings")
         if self.max_queue_size < 1 or self.lease_seconds < 10 or self.run_timeout_seconds < 1:

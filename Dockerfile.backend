@@ -27,8 +27,8 @@ USER root
 ARG EMBEDDING_REVISION
 COPY scripts/verify_embedding_model.py /app/verify_embedding_model.py
 RUN test -n "$EMBEDDING_REVISION" \
-    && uv sync --locked --no-dev --group build --extra embeddings \
-    && uv sync --locked --no-dev --no-editable --extra embeddings
+    && uv sync --locked --no-dev --group build --extra embeddings --extra bedrock \
+    && uv sync --locked --no-dev --no-editable --extra embeddings --extra bedrock
 ENV PATH="/app/.venv/bin:${PATH}"
 RUN python -c "from sentence_transformers import SentenceTransformer; import os,re; revision=os.environ['EMBEDDING_REVISION']; assert re.fullmatch('[a-f0-9]{40}',revision); SentenceTransformer('BAAI/bge-small-en-v1.5', revision=revision, cache_folder='/opt/models')"
 RUN python -c "from huggingface_hub import hf_hub_download; import os; revision=os.environ['EMBEDDING_REVISION']; path=hf_hub_download('BAAI/bge-small-en-v1.5', 'README.md', revision=revision, cache_dir='/opt/models'); assert os.path.getsize(path)>0"

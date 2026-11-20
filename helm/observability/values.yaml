@@ -1,13 +1,11 @@
 {
-  "webImage": "",
-  "workerImage": "",
-  "clickhouseImage": "",
-  "valkeyImage": "",
+  "webImage": "langfuse/langfuse@sha256:e122c89655e29e18167d78576ee47560e36873a0eccf344f9af93c950b6ce07a",
+  "workerImage": "langfuse/langfuse-worker@sha256:e1aeea141c876112aeaf87d3ef4a06d42c50aaa57815b1ae1f9dd54f1ee235ca",
+  "clickhouseImage": "clickhouse/clickhouse-server@sha256:3fb2bd1a2fa9e095a1844b2b559eb580795773cf459a994f53be86e7ec999704",
+  "valkeyImage": "valkey/valkey@sha256:57bcc49c6ade1813ef25206c571b65b66bb0094235ff7fb767941622892297d9",
   "secretName": "research-observability",
   "storageClass": "deepresearch-observability-gp3",
-  "environment": "",
-  "sessionId": "",
-  "clickhouseClientSecretName": "research-clickhouse-client",
+  "environment": "staging",
   "createStorageClasses": true,
   "secretRevision": ""
 }

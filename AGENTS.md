@@ -22,12 +22,11 @@ Use separate worktrees for concurrent writers; do not run Git worktree commands 
 
 ## Project invariants
 
-- Deep Agents SDK directly; no Managed Deep Agents or LangSmith hosted-service/tracing dependency (the SDK has an open-source transitive client; see ADR-0001). AWS staging/production use a separate private vLLM service; local real-model tests use Bedrock.
+- Deep Agents SDK directly; no Managed Deep Agents or LangSmith hosted-service/tracing dependency (the SDK has an open-source transitive client; see ADR-0001). AWS staging/production and local real-model tests currently use Bedrock (ADR-0012); a private vLLM service remains a future option.
 - Enforce user ownership, approval, and admin authorization on the server, including retrieval, files, state, events, and virtual filesystem paths. Never trust client-supplied owner IDs.
 - Preserve durable conversations and privately scoped documents. Cross-conversation memory requires explicit user action; never silently save personal facts.
 - Use fake providers for offline tests. Real Bedrock, GPU, Tavily, or AWS operations require appropriate existing authorization and explicit configuration; no silent paid fallback.
-- AWS demo environments run sequentially within a four-vCPU G/VT quota. Target $200/month, four-hour sessions, and 20 combined environment hours/month. Estimates and alerts are not hard billing caps.
-- Shutdown preserves data by default. Purge is distinct, explicit, and follows verified backups where required. Do not weaken these controls to make a check pass.
+- AWS environments are created, updated and destroyed only by the GitHub Actions `Deploy` and `Destroy` workflows (see `infra/README.md`, ADR-0012). Production deploys only after staging passes in the same run. Destroy deletes all environment data. Target $200/month; destroy idle environments.
 - No credentials, uploaded documents, database dumps, Terraform state, or private transcripts in Git or logs. Use synthetic test data and secret references.
 
 ## Engineering and verification

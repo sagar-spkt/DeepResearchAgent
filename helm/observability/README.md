@@ -1,11 +1,11 @@
-# Private observability chart
+# Observability chart
 
-Deploy in namespace research only after externally creating research-observability Secret, the Terraform runtime EBS CSI add-on and observability Pod Identity role. This chart creates separate encrypted gp3 Retain StorageClasses for ClickHouse and Valkey. Supply environment and sessionId matching the admitted runtime session; the chart tags new volumes with Project, Environment, Session, Retention=data and Component. The storageClass value is a name prefix; ensure both resulting names are not owned by another release. Existing PVCs/StorageClasses are not retagged or migrated by this change; reconcile them explicitly before rollout. The EBS CSI driver supports these [tagSpecification parameters](https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/tagging.md). Pin tested image digests for web, worker, ClickHouse and Valkey. PostgreSQL is external RDS, with a separate langfuse database/user.
+Self-hosted Langfuse (web + worker) with single-node ClickHouse and Valkey on
+encrypted gp3 volumes (reclaim policy `Delete`, so tearing down an environment
+removes them). PostgreSQL is the environment's RDS instance, using a separate
+`langfuse` database/user created by the research chart's bootstrap job.
 
-Secret values include DATABASE_URL, NEXTAUTH_URL (private/admin-gateway origin), NEXTAUTH_SECRET, SALT, ENCRYPTION_KEY, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, S3 trace bucket/region and headless owner/project bootstrap. S3 authentication should use the separately reviewed observability role; do not copy permanent AWS keys into the chart. Test the selected Langfuse image's exact environment compatibility.
-
-There is deliberately no direct Ingress. Optional `helm/research` console routing uses a separate child hostname and NGINX auth_request through the web session proxy and backend administrator check. Keep it disabled until browser verification; configure NEXTAUTH_URL to that child origin and use an ACM certificate covering both hosts. Backend access for trace ingestion does not grant end users UI access. Validate revocation using existing sessions before enabling gateway.
-
-Stateful PVCs survive chart deletion but not cluster/storage teardown guarantees. Backup ClickHouse to retained S3 and verify restore before deleting runtime EBS volumes. A Terraform RDS final snapshot alone does not preserve ClickHouse. This chart is single-instance, not HA; resource requests/limits require measurement on the CPU node.
-
-For staging, run `AWS_PROFILE=research-operator scripts/bootstrap_staging_namespace.sh "$STAGING_SESSION_ID"` from the allowed operator network after runtime provisioning and before dispatching Deploy staging. This uses the cluster-admin role to prepare the namespace and session-tagged StorageClasses under the active staging lease. The workflow materializes the retained Langfuse settings, binds both clients to the live RDS endpoint, bootstraps the databases, and installs the private observability chart with the pinned staging image digests. It requires access to the staging Langfuse secret and current RDS bootstrap secret. The chart supports `createStorageClasses=false` for namespace-scoped installations with precreated classes.
+The deploy workflow creates the `research-observability` Secret from Terraform
+outputs before installing this chart. Image digests are pinned in
+`values.yaml`. Langfuse has no public route; reach it with
+`kubectl -n research port-forward svc/langfuse 3000:3000`.

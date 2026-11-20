@@ -25,6 +25,13 @@ EXCLUDED = {
     ".next",
 }
 
+# Only these jobs may request a GitHub OIDC token to assume an AWS deploy role.
+OIDC_JOBS = {
+    (".github/workflows/deploy.yml", "staging"),
+    (".github/workflows/deploy.yml", "production"),
+    (".github/workflows/destroy.yml", "destroy"),
+}
+
 
 def check(root=ROOT):
     errors = []
@@ -84,27 +91,18 @@ def check(root=ROOT):
                     for job_name, job in data.get("jobs", {}).items():
                         job_permissions = job.get("permissions")
                         if job_permissions is not None and not (
-                            (
-                                relative == ".github/workflows/deploy.yml"
-                                and job_name == "deploy"
-                                or relative == ".github/workflows/provision-staging.yml"
-                                and job_name == "provision"
-                                or relative == ".github/workflows/publish-expiry-image.yml"
-                                and job_name == "publish"
-                            )
+                            (relative, job_name) in OIDC_JOBS
                             and job_permissions == {"contents": "read", "id-token": "write"}
-                            or relative == ".github/workflows/finalize-staging.yml"
-                            and job_name == "finalize"
-                            and job_permissions
-                            == {"contents": "read", "id-token": "write"}
                         ):
                             errors.append(
                                 f"{relative}: job {job_name} has permissions outside its approved scope"
                             )
                     for job in data.get("jobs", {}).values():
                         for step in job.get("steps", []):
-                            if "uses" in step and not re.fullmatch(
-                                r"[^@]+@[0-9a-f]{40}", step["uses"]
+                            if (
+                                "uses" in step
+                                and not step["uses"].startswith("./")
+                                and not re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"])
                             ):
                                 errors.append(f"{relative}: action is not SHA-pinned")
                     if bash is None:

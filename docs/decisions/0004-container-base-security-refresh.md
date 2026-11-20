@@ -2,7 +2,7 @@
 
 - Status: Accepted for the local portfolio baseline
 - Date: 2026-11-15
-- Related requirement or issue: PLT-02 in `docs/remaining-work-plan.md`
+- Related requirement or issue: PLT-02 in the project history (the remaining-work plan was retired by ADR-0012)
 
 ## Context
 
@@ -18,4 +18,4 @@ The alternative was to rely only on a newer base-image digest. That would retain
 
 Base image identity remains pinned, but final OS package layers are time-dependent on the Debian repositories at build time. The exact local image digest and scan report must therefore be retained with each release; rebuilds can produce different runtime image digests. A future release pipeline should run vulnerability and license scans against the exact images it publishes and record their SBOM/provenance. Do not treat the current local scan as release approval.
 
-On 2026-11-14, backend, web, and amd64 CPU embeddings images built locally. The backend imported as non-root; BGE produced a finite, normalized 384-dimensional vector with networking disabled. Trivy 0.76.1 reported zero Critical and zero fixable High findings in the updated web and embeddings images. It still reported 46 and 103 High Debian OS-package findings respectively, with no fix versions in those reports. See the local scan summary and remaining gates in `docs/remaining-work-plan.md` and license observations in `docs/dependency-license-inventory.md`. No image was published to ECR and no AWS deployment was performed.
+On 2026-11-14, backend, web, and amd64 CPU embeddings images built locally. The backend imported as non-root; BGE produced a finite, normalized 384-dimensional vector with networking disabled. Trivy 0.76.1 reported zero Critical and zero fixable High findings in the updated web and embeddings images. It still reported 46 and 103 High Debian OS-package findings respectively, with no fix versions in those reports. See the local scan summary and remaining gates in the project history (the remaining-work plan was retired by ADR-0012) and license observations in `docs/dependency-license-inventory.md`. No image was published to ECR and no AWS deployment was performed.

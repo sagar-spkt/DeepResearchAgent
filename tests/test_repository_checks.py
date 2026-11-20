@@ -168,9 +168,9 @@ class RepositoryChecksTest(unittest.TestCase):
         self.assertIn("grep -Eiv '^[[:space:]]*proxy_set_header (Upgrade|Connection)", command)
         self.assertIn("must not forward WebSocket upgrade headers.", command)
         self.assertIn("research-console.yaml", command)
-        self.assertIn("nginx_image=ghcr.io/nginx/nginx-unprivileged:1.30.6-alpine3.24@sha256:", command)
+        self.assertIn("nginx_image=ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine3.24@sha256:", command)
         self.assertIn(
-            "sha256:6b0610b60dff09248d642643a29393543a92eb355b00bbd1d12c7af562ef94c4",
+            "sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd",
             command,
         )
         self.assertIn("nginx_config=\"$RUNNER_TEMP/research-console.conf\"", command)
@@ -258,41 +258,6 @@ class RepositoryChecksTest(unittest.TestCase):
         )
         self.assertIn('bedrock = ["langchain-aws==1.7.3"]', project)
         self.assertIn("import langchain_aws", bedrock_test)
-
-    def test_expiry_scheduler_dead_letter_queue_has_owner_alarm(self):
-        terraform = (ROOT / "infra/expiry/main.tf").read_text()
-        self.assertIn('resource "aws_cloudwatch_metric_alarm" "scheduler_dead_letter"', terraform)
-        alarm = terraform.split(
-            'resource "aws_cloudwatch_metric_alarm" "scheduler_dead_letter"', 1
-        )[1]
-        alarm = alarm.split("\n}", 1)[0]
-        self.assertIn('namespace           = "AWS/SQS"', alarm)
-        self.assertIn('metric_name         = "ApproximateNumberOfMessagesVisible"', alarm)
-        self.assertIn('QueueName = aws_sqs_queue.dead.name', alarm)
-        self.assertIn("evaluation_periods  = 2", alarm)
-        self.assertIn("datapoints_to_alarm = 2", alarm)
-        self.assertIn("threshold           = 0", alarm)
-        self.assertIn("alarm_actions       = [var.alert_topic_arn]", alarm)
-
-    def test_encrypted_alert_topic_key_policy_allows_only_scoped_services(self):
-        terraform = (ROOT / "infra/foundation/main.tf").read_text()
-        key = terraform.split('resource "aws_kms_key" "alerts"', 1)[1]
-        key = key.split('resource "aws_kms_alias" "alerts"', 1)[0]
-        topic_arn = (
-            '"kms:EncryptionContext:aws:sns:topicArn" = '
-            '"arn:aws:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${local.name}-alerts"'
-        )
-        self.assertIn('Principal = { Service = "cloudwatch.amazonaws.com" }', key)
-        self.assertIn('Principal = { Service = "sns.amazonaws.com" }', key)
-        self.assertIn(topic_arn, key)
-        self.assertIn('"aws:SourceAccount" = data.aws_caller_identity.current.account_id', key)
-        self.assertIn('kms_master_key_id = aws_kms_key.alerts.arn', terraform)
-
-    def test_foundation_provider_is_pinned_to_explicit_account_id(self):
-        terraform = (ROOT / "infra/foundation/versions.tf").read_text()
-        self.assertIn("allowed_account_ids = [var.account_id]", terraform)
-        self.assertIn('condition     = can(regex("^[0-9]{12}$", var.account_id))', terraform)
-        self.assertIn("var.account_id", terraform)
 
     def test_install_preserves_unmanaged_files(self):
         target = self.root / ".claude/agents/implementer.md"

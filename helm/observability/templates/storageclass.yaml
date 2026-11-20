@@ -8,15 +8,13 @@ metadata:
   name: {{ printf "%s-%s" $root.Values.storageClass $component | quote }}
 provisioner: ebs.csi.aws.com
 volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Retain
+reclaimPolicy: Delete
 allowVolumeExpansion: true
 parameters:
   type: gp3
   encrypted: "true"
   tagSpecification_1: "Project=deepresearch"
   tagSpecification_2: {{ printf "Environment=%s" $root.Values.environment | quote }}
-  tagSpecification_3: {{ printf "Session=%s" $root.Values.sessionId | quote }}
-  tagSpecification_4: "Retention=data"
-  tagSpecification_5: {{ printf "Component=%s" $component | quote }}
+  tagSpecification_3: {{ printf "Component=%s" $component | quote }}
 {{- end }}
 {{- end }}

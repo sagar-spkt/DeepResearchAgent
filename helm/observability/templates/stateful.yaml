@@ -17,9 +17,6 @@ spec:
       labels: { app: observability, component: {{ $name }} }
     spec:
       automountServiceAccountToken: false
-      {{- if eq $name "clickhouse" }}
-      serviceAccountName: research-clickhouse-backup
-      {{- end }}
       nodeSelector: { workload: cpu }
       containers:
         - name: {{ $name }}
@@ -33,7 +30,6 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ $root.Values.secretName }}, key: CLICKHOUSE_USER } }
             - name: CLICKHOUSE_PASSWORD
               valueFrom: { secretKeyRef: { name: {{ $root.Values.secretName }}, key: CLICKHOUSE_PASSWORD } }
-            - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
           ports: [{ name: http, containerPort: 8123 }, { name: native, containerPort: 9000 }]
           {{- end }}
           resources:
@@ -41,21 +37,6 @@ spec:
             limits: { cpu: "2000m", memory: {{ if eq $name "clickhouse" }}"8Gi"{{ else }}"1Gi"{{ end }} }
           volumeMounts:
             - { name: data, mountPath: {{ if eq $name "clickhouse" }}"/var/lib/clickhouse"{{ else }}"/data"{{ end }} }
-            {{- if eq $name "clickhouse" }}
-            - { name: client-config, mountPath: /etc/clickhouse-client, readOnly: true }
-            - { name: backup-config, mountPath: /etc/clickhouse-server/config.d/research-backup.xml, subPath: research-backup.xml, readOnly: true }
-            {{- end }}
-      {{- if eq $name "clickhouse" }}
-      volumes:
-        - name: client-config
-          secret:
-            secretName: {{ $root.Values.clickhouseClientSecretName | quote }}
-            defaultMode: 0444
-            items: [{ key: config.xml, path: config.xml }]
-        - name: backup-config
-          configMap:
-            name: research-clickhouse-backup
-      {{- end }}
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:

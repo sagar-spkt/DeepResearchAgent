@@ -9,7 +9,7 @@ A portfolio application for self-hosted deep research with durable conversations
 - [Project specification](docs/project-specification.md)
 - [Contributor workflow](CONTRIBUTING.md)
 - [Coding agent setup](docs/agent-setup.md)
-- [AWS deployment prerequisites](infra/BOOTSTRAP.md)
+- [AWS environments and deploy/destroy pipelines](infra/README.md)
 
 ## License
 
