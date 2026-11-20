@@ -100,6 +100,9 @@ step "Langfuse"
 helm upgrade --install research-observability helm/observability \
   --namespace "$NAMESPACE" --wait --timeout 15m \
   --set environment="$ENVIRONMENT" --set-string secretRevision="$OBSERVABILITY_REVISION"
+# Langfuse has no built-in Amazon Nova prices; register them so traces show costs.
+# Runs in the API pod, which holds the Langfuse project keys and can reach Langfuse.
+kubectl -n "$NAMESPACE" exec -i deploy/research-api -- python - < scripts/langfuse_register_models.py
 endstep
 
 step "DNS"
