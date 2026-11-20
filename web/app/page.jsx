@@ -29,6 +29,10 @@ export default function ResearchDesk() {
     setConversations(list(cs)); setDocuments(list(ds)); setMemories(list(ms));
   }
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('signin') === 'expired') {
+      setError('Your sign-in took too long to complete. Please log in again.');
+      window.history.replaceState(null, '', '/');
+    }
     api('/me').then(async value => {setMe(value); await refresh();}).catch(e => {if (e.status !== 401) fail(e);}).finally(() => setAuthReady(true));
     return () => stream.current?.abort();
   }, []);

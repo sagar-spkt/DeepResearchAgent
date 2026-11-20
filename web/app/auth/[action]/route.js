@@ -4,6 +4,8 @@ import {configuration, logoutUrl, cookieAttributes, sessionCookieHeaders, pkce, 
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Sign-up includes reading a verification email, so allow 30 minutes for the round trip.
+const AUTH_FLOW_SECONDS = 1800;
 export async function GET(request, {params}) {
   try {
     const config = configuration();
@@ -21,14 +23,17 @@ export async function GET(request, {params}) {
       const url = new URL(action === 'signup' ? '/signup' : '/oauth2/authorize', config.domain);
       url.search = new URLSearchParams({client_id: config.clientId, response_type: 'code', scope: 'openid email profile', redirect_uri: new URL('/auth/callback', config.base).href, state: flow.state, code_challenge: flow.challenge, code_challenge_method: 'S256'}).toString();
       const response = NextResponse.redirect(url);
-      response.cookies.set(FLOW_COOKIE, seal(flow, config.secret), {...cookieAttributes(config), maxAge: 600});
+      response.cookies.set(FLOW_COOKIE, seal(flow, config.secret), {...cookieAttributes(config), maxAge: AUTH_FLOW_SECONDS});
       return response;
     }
     if (action !== 'callback') return NextResponse.json({detail: 'Unknown authentication action'}, {status: 404});
     const flow = unseal(store.get(FLOW_COOKIE)?.value, config.secret);
     const query = new URL(request.url).searchParams;
-    if (!flow || Date.now() - flow.createdAt > 600000 || !stateMatches(flow.state, query.get('state')) || !query.get('code')) {
-      return NextResponse.json({detail: 'Authentication flow expired or state mismatch. Please sign in again.'}, {status: 400});
+    if (!flow || Date.now() - flow.createdAt > AUTH_FLOW_SECONDS * 1000 || !stateMatches(flow.state, query.get('state')) || !query.get('code')) {
+      // Usually a slow email verification; send the user back to log in instead of showing JSON.
+      const response = NextResponse.redirect(new URL('/?signin=expired', config.base));
+      response.cookies.set(FLOW_COOKIE, '', {...cookieAttributes(config), maxAge: 0});
+      return response;
     }
     const tokenResponse = await fetch(new URL('/oauth2/token', config.domain), {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams({grant_type: 'authorization_code', client_id: config.clientId, redirect_uri: new URL('/auth/callback', config.base).href, code: query.get('code'), code_verifier: flow.verifier}), cache: 'no-store'});
     if (!tokenResponse.ok) return NextResponse.json({detail: 'Unable to exchange sign-in code. Please sign in again.'}, {status: 401});
