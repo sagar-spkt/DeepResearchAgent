@@ -25,7 +25,7 @@ encrypted state and in Kubernetes Secrets.
    terraform -chdir=infra/ci apply
    ```
 
-   Each role trusts only `repo:sagar-spkt/DeepResearchAgent:environment:<env>`
+   Each role trusts only `repo:sagar-spkt@22609549/DeepResearchAgent@1457879530:environment:<env>` (the repo uses immutable OIDC subjects)
    and has `AdministratorAccess`, because Terraform creates and deletes IAM
    roles, EKS, RDS and networking.
 2. In the GitHub `staging` and `production` environments set variable
