@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     model_provider: Literal["fake", "bedrock", "vllm"] = "bedrock"
     release_id: str = "development"
     bedrock_model_id: str = ""
+    # Context window the agent may use before it summarizes the conversation.
+    model_context_tokens: int = 64_000
     aws_region: str = "us-east-1"
     vllm_base_url: str = ""
     vllm_api_key: str = ""
@@ -83,6 +85,8 @@ class Settings(BaseSettings):
                 raise ValueError("Cloud environments require S3 and a real model provider")
             if self.embedding_provider != "sentence-transformers":
                 raise ValueError("Cloud environments require real embeddings")
+        if self.model_context_tokens < 4096:
+            raise ValueError("MODEL_CONTEXT_TOKENS must be at least 4096")
         if self.max_queue_size < 1 or self.lease_seconds < 10 or self.run_timeout_seconds < 1:
             raise ValueError("Invalid operational limits")
         return self
