@@ -6,6 +6,8 @@ kind: Deployment
 metadata: { name: langfuse-{{ $name }} }
 spec:
   replicas: 1
+  # A single node has no headroom for surge pods during rolling updates.
+  strategy: { type: Recreate }
   selector:
     matchLabels: { app: observability, component: langfuse-{{ $name }} }
   template:
