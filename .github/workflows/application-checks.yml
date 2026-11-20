@@ -123,12 +123,8 @@
           "run": "docker run --rm --network none --entrypoint python deepresearch-embeddings:ci -c \"from pathlib import Path; p=Path('/opt/models/bge-small-en-v1.5/README.md'); assert p.is_file() and p.stat().st_size > 0\""
         },
         {
-          "name": "Pull pinned Langfuse console proxy image",
-          "run": "docker pull ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine3.24@sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd"
-        },
-        {
           "name": "Scan and create SBOMs",
-          "run": "set -eu\nfor image in deepresearch-backend:ci deepresearch-embeddings:ci deepresearch-web:ci; do\n  name=${image%:ci}\n  trivy image --scanners vuln,license --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json --output \"local-data/ci-artifacts/${name}-trivy.json\" \"$image\"\n  trivy image --format cyclonedx --output \"local-data/ci-artifacts/${name}-sbom.cdx.json\" \"$image\"\n  trivy image --scanners vuln --severity CRITICAL --exit-code 1 \"$image\"\n  trivy image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 1 \"$image\"\ndone\nconsole_image=ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine3.24@sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd\ntrivy image --scanners vuln,license --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json --output local-data/ci-artifacts/langfuse-console-nginx-trivy.json \"$console_image\"\ntrivy image --format cyclonedx --output local-data/ci-artifacts/langfuse-console-nginx-sbom.cdx.json \"$console_image\"\ntrivy image --scanners vuln --severity CRITICAL --exit-code 1 \"$console_image\"\ntrivy image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 1 \"$console_image\""
+          "run": "set -eu\nfor image in deepresearch-backend:ci deepresearch-embeddings:ci deepresearch-web:ci; do\n  name=${image%:ci}\n  trivy image --scanners vuln,license --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json --output \"local-data/ci-artifacts/${name}-trivy.json\" \"$image\"\n  trivy image --format cyclonedx --output \"local-data/ci-artifacts/${name}-sbom.cdx.json\" \"$image\"\n  trivy image --scanners vuln --severity CRITICAL --exit-code 1 \"$image\"\n  trivy image --scanners vuln --ignore-unfixed --severity HIGH --exit-code 1 \"$image\"\ndone"
         },
         {
           "name": "Upload image scan reports and SBOMs",

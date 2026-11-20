@@ -1,6 +1,6 @@
 # ADR-0012: Disposable environments deployed only by GitHub Actions
 
-Status: accepted (2026-11-19). Supersedes ADR-0002 and ADR-0005 through ADR-0011.
+Status: accepted (2026-11-19). Supersedes ADR-0002 through ADR-0011 (removed from the repository).
 
 ## Context
 
@@ -25,9 +25,10 @@ production updated only after staging passes.
   same run. Each environment builds its images from the same commit.
 - `Destroy` workflow: manual, confirmed by retyping the environment name.
 - Staging and production use Amazon Bedrock (Nova Lite) instead of private
-  vLLM for now. The vLLM chart template remains available behind
-  `model.provider=vllm` and `vllm.enabled`.
-- Langfuse is self-hosted in-cluster without a public route.
+  vLLM for now. The backend model factory still supports a vLLM endpoint; the
+  Helm chart is Bedrock-only.
+- Langfuse is self-hosted in-cluster without a public route (no
+  administrator console gateway).
 
 ## Consequences
 

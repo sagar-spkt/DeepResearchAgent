@@ -6,24 +6,11 @@
   "webSecret": "research-web-env",
   "bootstrapSecret": "research-db-bootstrap",
   "model": {
-    "provider": "bedrock",
     "bedrockModelId": "amazon.nova-lite-v1:0"
   },
   "ingress": {
     "enabled": false,
     "host": "",
     "certificateArn": ""
-  },
-  "vllm": {
-    "enabled": false,
-    "image": "",
-    "model": "Qwen/Qwen3-8B",
-    "revision": "",
-    "maxModelLen": 16384
-  },
-  "vllmSecret": "research-vllm",
-  "console": {
-    "enabled": false,
-    "image": ""
   }
 }

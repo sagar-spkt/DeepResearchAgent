@@ -41,19 +41,10 @@ spec:
             - { name: APP_ENV, value: {{ $root.Values.environment | quote }} }
             - { name: AUTH_MODE, value: cognito }
             - { name: API_INTERNAL_URL, value: "http://research-api:8000" }
-            {{- if $root.Values.console.enabled }}
-            - { name: OBSERVABILITY_HOST, value: {{ printf "observability.%s" $root.Values.ingress.host | quote }} }
-            {{- end }}
-            {{- else if $root.Values.console.enabled }}
-            - { name: OBSERVABILITY_CONSOLE_URL, value: {{ printf "https://observability.%s/" $root.Values.ingress.host | quote }} }
             {{- end }}
             - { name: ENVIRONMENT, value: {{ $root.Values.environment | quote }} }
-            - { name: MODEL_PROVIDER, value: {{ $root.Values.model.provider | quote }} }
-            {{- if eq $root.Values.model.provider "vllm" }}
-            - { name: VLLM_BASE_URL, value: "http://research-vllm:8000/v1" }
-            {{- else }}
+            - { name: MODEL_PROVIDER, value: bedrock }
             - { name: BEDROCK_MODEL_ID, value: {{ $root.Values.model.bedrockModelId | quote }} }
-            {{- end }}
             - { name: STORAGE_BACKEND, value: s3 }
             - { name: EMBEDDING_PROVIDER, value: sentence-transformers }
           {{- if ne $name "web" }}

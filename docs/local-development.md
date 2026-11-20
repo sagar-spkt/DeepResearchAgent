@@ -114,8 +114,8 @@ npm --prefix web run check
 .venv/bin/python scripts/run_evals.py --output local-data/evals/offline.json
 ```
 
-The 20-case offline dataset verifies harness execution/source plumbing, not real research quality. Live evals require `--live` plus explicit model configuration and cost authorization. `scripts/benchmark_inference.py` measures a configured private vLLM endpoint; no GPU results have been fabricated.
+The 20-case offline dataset verifies harness execution/source plumbing, not real research quality. Live evals require `--live` plus explicit model configuration and cost authorization.
 
 ## Observability boundary
 
-Langfuse callbacks batch metadata-only generation/tool traces; transport failure does not destroy a report. Admin trace metadata is available through `/api/admin/traces` when project keys are configured and live permissions allow reads. The legacy native-console subpath proxy deliberately returns503. Optional separate-host Helm source serves the native console at `https://observability.<application-host>/` with per-request administrator authorization. It is disabled by default until NGINX, cookies, assets and revocation are tested in a browser. Do not treat metadata tests as a complete console integration. Console organization membership remains a separate owner-managed operation.
+Langfuse callbacks batch metadata-only generation/tool traces; transport failure does not destroy a report. Admin trace metadata is available through `/api/admin/traces` when project keys are configured and live permissions allow reads. The native Langfuse console is not exposed publicly; in AWS reach it with `kubectl port-forward` (see `infra/README.md`).

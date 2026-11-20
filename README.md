@@ -1,18 +1,20 @@
 # Deep Research Agent
 
-A portfolio application for self-hosted deep research with durable conversations, private documents, explicit memory and reproducible AWS deployment source.
+A multi-user deep research app built on the open-source Deep Agents SDK. It
+researches the web (Tavily) and your uploaded documents, writes cited reports,
+and keeps durable conversations, private documents and explicit saved memory.
 
-**Current state:** local API, worker, web UI, PostgreSQL/pgvector, pinned BGE CPU embeddings and migrations are running. A bounded Bedrock + Tavily research request completed with source links, a browser upload was indexed and cited in a document-grounded answer, and the API/worker recovered conversation and checkpoint state after restart. Local low-load Langfuse ingestion and the admin metadata view were exercised. Backend and web images build from locked dependencies with pinned Python/Node base digests; the web image returned HTTP 200, and the x86_64 embedding image ran offline BGE inference in a disposable container. Broad research quality, full browser acceptance, Cognito flows and AWS deployment/restore remain unverified; release remains blocked on the items in the roadmap.
+- **Stack:** FastAPI API + worker, Next.js web, PostgreSQL/pgvector, BGE CPU
+  embeddings, Amazon Bedrock, self-hosted Langfuse, Cognito sign-in.
+- **Local:** Docker Compose; see [local development](docs/local-development.md).
+- **AWS:** staging and production are created, updated and destroyed only by the
+  GitHub Actions *Deploy* and *Destroy* workflows; see
+  [AWS environments](infra/README.md).
 
-- [Implementation roadmap and evidence](docs/implementation-roadmap.md)
-- [Local setup and verification](docs/local-development.md)
-- [Project specification](docs/project-specification.md)
-- [Contributor workflow](CONTRIBUTING.md)
-- [Coding agent setup](docs/agent-setup.md)
-- [AWS environments and deploy/destroy pipelines](infra/README.md)
+More: [project specification](docs/project-specification.md) ·
+[contributing](CONTRIBUTING.md) · [coding agent setup](docs/agent-setup.md) ·
+[decisions](docs/decisions/).
 
 ## License
 
-This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
-
-Start with the local development guide. No AWS resources are created by ordinary tests or by reading this repository.
+Apache License 2.0. See [LICENSE](LICENSE).
