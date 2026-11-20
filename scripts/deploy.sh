@@ -121,6 +121,25 @@ aws route53 wait resource-record-sets-changed --id "$change_id"
 echo "$APP_HOST -> $ALB_DNS"
 endstep
 
+step "Bootstrap owner"
+# Cloud sign-ups are never auto-promoted. Once BOOTSTRAP_OWNER_EMAIL has signed
+# up and verified in Cognito, make that verified identity the first owner.
+# Re-run Deploy after the first sign-up; later runs are no-ops.
+POOL_ID=$(tf app_config cognito_issuer); POOL_ID=${POOL_ID##*/}
+OWNER_SUB=$(aws cognito-idp list-users --user-pool-id "$POOL_ID" \
+  --filter "email = \"$BOOTSTRAP_OWNER_EMAIL\"" \
+  --query 'Users[?UserStatus==`CONFIRMED`] | [0].Attributes[?Name==`sub`].Value | [0]' --output text)
+if [ -z "$OWNER_SUB" ] || [ "$OWNER_SUB" = None ]; then
+  echo "Owner has not signed up yet; sign up as $BOOTSTRAP_OWNER_EMAIL and re-run Deploy."
+elif result=$(kubectl -n "$NAMESPACE" exec deploy/research-api -- python -m research_app.manage \
+    bootstrap-owner --subject "$OWNER_SUB" --email "$BOOTSTRAP_OWNER_EMAIL" 2>&1); then
+  echo "$result"
+else
+  echo "$result" | grep -q "Owner already exists" || { echo "$result" >&2; exit 1; }
+  echo "Owner already exists."
+fi
+endstep
+
 step "Smoke tests"
 kubectl -n "$NAMESPACE" exec deploy/research-api -- python -c \
   'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=10); assert r.status == 200; print("api readyz ok")'
