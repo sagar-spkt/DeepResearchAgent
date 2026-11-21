@@ -5,8 +5,8 @@ described in [docs/evaluations.md](evaluations.md):
 
 - **Scores** come from four LLM-as-a-judge evaluators (DeepSeek V3.2 on Bedrock)
   running inside Langfuse, using the v2 judge prompt.
-- **Reviewer notes** come from reading every report against its rubric. That review
-  was done by the coding agent, not a human.
+- **Reviewer notes** come from the project owner reading every report against its
+  rubric. This is one reviewer, not a labelled calibration set for the judges.
 
 Compare the runs in Langfuse under Datasets → `deep-research-eval-v2` → Runs.
 
