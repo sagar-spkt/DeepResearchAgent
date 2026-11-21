@@ -224,7 +224,7 @@ agent-config/     Source definitions for coding-agent roles and skills
 - [Project specification](docs/project-specification.md)
 - [Local development](docs/local-development.md)
 - [AWS environments](infra/README.md)
-- [Evaluations in Langfuse](docs/evaluations.md)
+- [Evaluations in Langfuse](docs/evaluations.md) and [results](docs/evaluation-results.md)
 - [Architecture decision records](docs/decisions/)
 - [Contributing](CONTRIBUTING.md)
 - [Coding agent setup](docs/agent-setup.md)
