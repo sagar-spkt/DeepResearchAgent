@@ -2,7 +2,7 @@
 
 ## Current execution boundary
 
-Offline tests explicitly select fake providers, but the default local application configuration uses real Amazon Bedrock responses and real embeddings; it never silently falls back to fake output. Runtime startup now requires an explicit Bedrock model ID and embedding model. AWS deployment uses private vLLM. In this workspace, package installation, AWS profile/model discovery, real BGE CPU embeddings, a Bedrock tool-call request, one bounded Tavily-backed research run with rendered citations, a semantically phrased document retrieval answer, browser history/report/upload/attachment flow, Git initialization, Docker, PostgreSQL migration, local API/web startup and API/worker restart recovery against PostgreSQL checkpoints have been verified. Broad research quality, Cognito and AWS deployment remain unverified.
+Offline tests explicitly select fake providers, but the default local application configuration uses real Amazon Bedrock responses and real embeddings; it never silently falls back to fake output. Runtime startup now requires an explicit Bedrock model ID and embedding model. AWS staging and production use Bedrock Nova Pro (ADR-0012). In this workspace, package installation, AWS profile/model discovery, real BGE CPU embeddings, a Bedrock tool-call request, one bounded Tavily-backed research run with rendered citations, a semantically phrased document retrieval answer, browser history/report/upload/attachment flow, Git initialization, Docker, PostgreSQL migration, local API/web startup and API/worker restart recovery against PostgreSQL checkpoints have been verified. Cognito sign-in and AWS deployment have been verified on staging and production; broad research quality remains unverified.
 
 ## Backend
 
