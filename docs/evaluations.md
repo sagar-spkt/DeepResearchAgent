@@ -36,10 +36,12 @@ Re-running upserts the same item ids, so the dataset stays in sync with
 Settings → LLM Connections → Add:
 
 - **Provider name** `bedrock`, **adapter** Bedrock, **region** `us-east-1`.
-- **Use default AWS credentials**. Langfuse then uses its Pod Identity role
-  (`deepresearch-<env>-observability`), which may call only `judge_model_id`
-  (`infra/aws/main.tf`, default `deepseek.v3.2`).
-- **Custom model** `deepseek.v3.2`; turn off default models.
+- Leave **AWS Access Key ID** and **Secret** empty. Self-hosted Langfuse then uses
+  the AWS SDK default credential chain, which here is its Pod Identity role
+  (`deepresearch-<env>-observability`). That role may call only `judge_model_id`
+  (`infra/aws/main.tf`, default `deepseek.v3.2`). The list then shows
+  "Default AWS credentials".
+- **Custom model** `deepseek.v3.2`.
 
 The judge is deliberately a different model family from the agent (Nova Pro).
 LLM-as-a-judge needs a model with tool calling on Bedrock Converse; DeepSeek V3.2
@@ -47,27 +49,41 @@ was checked for this.
 
 ## 3. Create the evaluators (UI)
 
-Evaluators → Set up evaluator → Create custom evaluator, model `bedrock` /
-`deepseek.v3.2`, score type numeric 0–1. Run on **Experiments**, dataset
-`deep-research-eval-v2`. Map variables as follows:
+LLM-as-a-Judge → Set up evaluator → Create custom evaluator, model `bedrock` /
+`deepseek.v3.2`, score type numeric 0–1. Run on **Experiments** (target `dataset`),
+filtered to dataset `deep-research-eval-v2`, sampling 100%. Map variables as follows:
 
 | Variable | Source |
 | --- | --- |
+| `{{case_id}}` | Dataset item metadata, JSONPath `$.case_id` |
 | `{{prompt}}` | Dataset item input, JSONPath `$.prompt` |
 | `{{document}}` | Dataset item input, JSONPath `$.document` |
 | `{{web_search}}` | Dataset item input, JSONPath `$.web_search` |
 | `{{expected}}` | Dataset item expected output |
 | `{{report}}` | Trace output |
+| `{{sources}}` | Trace metadata (`web_sources`: URLs the agent's tools returned; `pages_read`: pages it opened) |
+
+When you save, Langfuse test-calls the model with the template's variables still
+empty. The judge sometimes asks for the missing inputs instead of scoring, and the
+save fails with "No tool calls found in the response". Save again; filled-in
+evaluations call the scoring tool reliably (DeepSeek V3.2 did so in 5 of 5 tries).
 
 Each prompt below starts with the same context block:
 
 ```text
 You are grading a report written by a research assistant. The assistant answered the
-user's prompt with one attached synthetic document named in the report as
-"research-NN.txt, section 1". Web search was: {{web_search}}.
+user's prompt with one attached synthetic document. Its correct citation is
+"{{case_id}}.txt, section 1". Web search was: {{web_search}}.
 You cannot browse. Do not judge whether external facts are true; judge whether claims
 are attributed to sources, stay within what the cited evidence supports, and state
 limitations. A criterion counts only if the report clearly satisfies it.
+
+Trace metadata. web_sources lists every public URL the assistant's tools actually
+returned; pages_read lists the pages it opened:
+{{sources}}
+A cited URL found in web_sources was really returned to the assistant. A cited URL
+missing from web_sources is unverified and may be invented. If web_sources is absent,
+do not guess whether URLs are real.
 
 User prompt:
 {{prompt}}
