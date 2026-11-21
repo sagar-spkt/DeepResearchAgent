@@ -409,6 +409,15 @@ def test_telemetry_keeps_final_output_when_event_cap_is_reached(context, monkeyp
     assert bodies[-1]["output"] == "Final report"
 
 
+def test_telemetry_records_citable_sources_with_final_output(context):
+    settings, _ = context
+    callback = _langfuse(settings, capture=True)
+    callback.set_output("Report", {"web_sources": ["https://a.example"], "pages_read": []})
+    final = callback.batch[-1]["body"]
+    assert final["metadata"]["web_sources"] == ["https://a.example"]
+    assert final["metadata"]["environment"] == settings.environment  # base metadata kept
+
+
 def test_telemetry_can_omit_content(context):
     settings, _ = context
     events = _exercise(_langfuse(settings, capture=False))

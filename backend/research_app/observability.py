@@ -98,6 +98,7 @@ class LangfuseCallback(BaseCallbackHandler):
             "timestamp": timestamp(),
         }
         self.trace_timestamp = trace["timestamp"]
+        self.trace_metadata = trace["metadata"]
         if self.capture and question is not None:
             trace["input"] = truncate(question)
         self.append("trace-create", trace)
@@ -110,14 +111,13 @@ class LangfuseCallback(BaseCallbackHandler):
             body.setdefault("environment", self.environment)
         self.batch.append({"id": str(uuid4()), "timestamp": timestamp(), "type": kind, "body": body})
 
-    def set_output(self, report):
-        """Record the final report on the trace (an upsert of the same trace id)."""
+    def set_output(self, report, metadata=None):
+        """Record the final report, and optional extra trace metadata, on the trace (an upsert)."""
         if self.capture:
-            self.append(
-                "trace-create",
-                {"id": self.run_id, "timestamp": self.trace_timestamp, "output": truncate(report)},
-                reserved=True,
-            )
+            body = {"id": self.run_id, "timestamp": self.trace_timestamp, "output": truncate(report)}
+            if metadata:
+                body["metadata"] = {**self.trace_metadata, **metadata}
+            self.append("trace-create", body, reserved=True)
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         body = {"id": str(run_id), "traceId": self.run_id, "name": "model", "startTime": timestamp()}
