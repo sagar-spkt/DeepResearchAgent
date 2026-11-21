@@ -141,7 +141,7 @@ python3 -m unittest discover -s tests -v
 node --test web/tests/*.test.mjs
 npm --prefix web run check
 
-# Offline agent evaluation (20 synthetic cases, fake model)
+# Offline agent evaluation (20 synthetic cases, fake model; live runs: docs/evaluations.md)
 .venv/bin/python scripts/run_evals.py --output local-data/evals/offline.json
 ```
 
@@ -224,6 +224,7 @@ agent-config/     Source definitions for coding-agent roles and skills
 - [Project specification](docs/project-specification.md)
 - [Local development](docs/local-development.md)
 - [AWS environments](infra/README.md)
+- [Evaluations in Langfuse](docs/evaluations.md)
 - [Architecture decision records](docs/decisions/)
 - [Contributing](CONTRIBUTING.md)
 - [Coding agent setup](docs/agent-setup.md)

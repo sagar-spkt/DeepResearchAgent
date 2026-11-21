@@ -58,6 +58,11 @@ resource "aws_iam_role_policy" "observability" {
     Statement = [
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "${aws_s3_bucket.data["traces"].arn}/*" },
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = aws_s3_bucket.data["traces"].arn },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        Resource = "arn:aws:bedrock:${var.region}::foundation-model/${var.judge_model_id}"
+      },
     ]
   })
 }

@@ -71,6 +71,13 @@ variable "bedrock_model_id" {
   default = "amazon.nova-pro-v1:0"
 }
 
+# Model Langfuse's LLM-as-a-judge evaluators call through a Bedrock LLM connection
+# that uses Langfuse's own Pod Identity role (no stored keys).
+variable "judge_model_id" {
+  type    = string
+  default = "deepseek.v3.2"
+}
+
 variable "admin_principal_arns" {
   type        = list(string)
   default     = []
